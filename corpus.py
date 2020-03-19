@@ -2,6 +2,9 @@ import os
 from itertools import izip
 import re
 import string
+import time
+import csv, math
+import numpy as np
 # read and organize data
 
 #3 2:3 4:5 5:3 --- document info (word: count)
@@ -181,9 +184,10 @@ def make_vocab(vocab):
         vocabdict[word] = len(vocabdict)
     return vocabdict
 
-def get_batch_from_disk(inroot, D, batch_size):
+def get_batch_from_disk(inroot, D, batch_size=None):
     """
-
+    Inputs:
+    Outputs:
     Remarks: 
         The 10k data-set is small enough (4MB) to be loaded in its 
         entirety. Might need to take care when moving to larger
@@ -191,19 +195,48 @@ def get_batch_from_disk(inroot, D, batch_size):
     """
 
     t0 = time.time()
-    # generate D random indices
-    indices = list(np.random.randint(0, D, batch_size))
+   
+    if (not batch_size is None):
+         # generate random indices
+        indices = list(np.random.randint(0, D, batch_size))
+        load_size = batch_size
+    else:
+        # load all examples
+        indices = list(range(0,D))
+        load_size = D
 
-    # load random rows from wordids and wordcts
     with open(inroot + "_wordids.csv") as f:
-        all_lines = list(csv.read(f))
+        all_lines = list(csv.reader(f))
         wordids = [list(map(int, all_lines[i])) for i in indices]
     with open(inroot + "_wordcts.csv") as f:
-        all_lines = list(csv.read(f))
+        all_lines = list(csv.reader(f))
         wordcts = [list(map(int, all_lines[i])) for i in indices]
 
     t1 = time.time()
-    print("Time to taken to get batch of size %d from a total of %d \
-        documents is %.2f" %(batch_size, D, t1-t0))
+    # print("Time to taken to get batch of size %d from a total of %d documents is %.2f" %(load_size, D, t1-t0))
 
     return (wordids, wordcts)
+
+
+def split_document(docids, doccts, ratio=0.75):
+    """
+    Split a document into an observed and a held-out part, enforcing
+    that the set of unique words in each part are disjoint. 
+    Inputs:
+        docids = list of ints
+        doccts = list of ints
+        ratio = scalar, by default 0.75
+    Outputs: tuple of four lists
+        wordobs_ids
+        wordobs_cts
+        wordho_ids
+        wordho_cts
+    """
+    Mobs = int(math.floor(len(docids)*ratio))
+    obsind = list(range(0, Mobs))
+    hoind = list(range(Mobs,len(docids)))
+    wordobs_ids = [docids[i] for i in obsind]
+    wordobs_cts = [doccts[i] for i in obsind]
+    wordho_ids = [docids[i] for i in hoind]
+    wordho_cts = [doccts[i] for i in hoind]
+    return (wordobs_ids, wordobs_cts, wordho_ids, wordho_cts)

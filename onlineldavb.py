@@ -23,6 +23,7 @@ from scipy.special import gammaln, psi
 import corpus
 from corpus import parse_doc_list
 from corpus import make_vocab
+from corpus import split_document
 
 n.random.seed(100000001)
 meanchangethresh = 0.001
@@ -287,6 +288,60 @@ class OnlineLDA:
         self._updatect += 1
 
         return(gamma, bound)
+
+    def log_likelihood_one(self, wordobs_ids, wordobs_cts, wordho_ids, \
+                      wordho_cts):
+        """
+        Inputs:
+            wordobs_ids: list, index in vocab of unique observed words
+            wordobs_cts: list, number of occurences of each unique observed word
+            wordho_ids: list, index in vocab of held-out words
+            wordho_cts: list, number of occurences of each unique held-out word
+        Outputs:
+            average log-likelihood of held-out words for the given document
+        """
+
+        # do E-step for the document represented by the observed words
+        # gamma should be 1 x self._K
+        gamma, _ = self.do_e_step([wordobs_ids],[wordobs_cts]) 
+
+        # compute log-likelihood for each unique held-out word
+        theta_means = gamma/n.sum(gamma) 
+        # theta_means should be (self._K,)
+        theta_means = theta_means.flatten(order='C') 
+        # lambda_sums should be self._K x 1
+        lambda_sums = n.sum(self._lambda, axis=1) 
+        # lambda_means should be self._K x self._W, rows suming to 1
+        lambda_means = self._lambda/lambda_sums[:, n.newaxis] 
+        Mho = range(0,len(wordho_ids))
+        proba = [wordho_cts[i]*n.log(n.dot(theta_means,lambda_means[:,wordho_ids[i]])) \
+                for i in Mho]
+
+        # average across all held-out words
+        tot = sum(wordho_cts)
+        return sum(proba)/tot
+
+    def log_likelihood_docs(self, wordids, wordcts):
+        """
+        Inputs:
+            wordids: list of lists
+            wordcts: list of lists
+        Outputs:
+        """ 
+        t0 = time.time()
+        M = len(wordids)
+        log_likelihoods = []
+        for i in range(M):
+            docids = wordids[i] # list 
+            doccts = wordcts[i] # list
+            wordobs_ids, wordobs_cts, wordho_ids, wordho_cts = \
+                split_document(docids, doccts)
+            doc_likelihood = \
+                self.log_likelihood_one(wordobs_ids, wordobs_cts, wordho_ids, wordho_cts)
+            log_likelihoods.append(doc_likelihood)
+        t1 = time.time()
+        # print("Time taken to evaluate log-likelihood %.2f" %(t1-t0))
+        return n.mean(log_likelihoods)
 
     def approx_bound(self, wordids, wordcts, gamma):
         """

@@ -1,6 +1,7 @@
 import os
 from itertools import izip
 import re
+import string
 # read and organize data
 
 #3 2:3 4:5 5:3 --- document info (word: count)
@@ -121,3 +122,88 @@ def parse_line(line):
     d.total = sum(d.counts)
     d.length = len(d.words)
     return d
+
+def parse_doc_list(docs, vocab):
+    """
+    Parse a document into a list of word ids and a list of counts,
+    or parse a set of documents into two lists of lists of word ids
+    and counts.
+
+    Arguments: 
+    docs:  List of D documents. Each document must be represented as
+           a single string. (Word order is unimportant.) Any
+           words not in the vocabulary will be ignored.
+    vocab: Dictionary mapping from words to integer ids.
+
+    Returns a pair of lists of lists. 
+
+    The first, wordids, says what vocabulary tokens are present in
+    each document. wordids[i][j] gives the jth unique token present in
+    document i. (Don't count on these tokens being in any particular
+    order.)
+
+    The second, wordcts, says how many times each vocabulary token is
+    present. wordcts[i][j] is the number of times that the token given
+    by wordids[i][j] appears in document i.
+    """
+    if (type(docs).__name__ == 'str'):
+        temp = list()
+        temp.append(docs)
+        docs = temp
+
+    D = len(docs)
+    
+    wordids = list()
+    wordcts = list()
+    for d in range(0, D):
+        docs[d] = docs[d].lower()
+        docs[d] = re.sub(r'-', ' ', docs[d])
+        docs[d] = re.sub(r'[^a-z ]', '', docs[d])
+        docs[d] = re.sub(r' +', ' ', docs[d])
+        words = string.split(docs[d])
+        ddict = dict()
+        for word in words:
+            if (word in vocab):
+                wordtoken = vocab[word]
+                if (not wordtoken in ddict):
+                    ddict[wordtoken] = 0
+                ddict[wordtoken] += 1
+        wordids.append(ddict.keys())
+        wordcts.append(ddict.values())
+
+    return((wordids, wordcts))
+
+def make_vocab(vocab):
+    vocabdict = dict()
+    for word in vocab:
+        word = word.lower()
+        word = re.sub(r'[^a-z]', '', word)
+        vocabdict[word] = len(vocabdict)
+    return vocabdict
+
+def get_batch_from_disk(inroot, D, batch_size):
+    """
+
+    Remarks: 
+        The 10k data-set is small enough (4MB) to be loaded in its 
+        entirety. Might need to take care when moving to larger
+        data-sets.  
+    """
+
+    t0 = time.time()
+    # generate D random indices
+    indices = list(np.random.randint(0, D, batch_size))
+
+    # load random rows from wordids and wordcts
+    with open(inroot + "_wordids.csv") as f:
+        all_lines = list(csv.read(f))
+        wordids = [list(map(int, all_lines[i])) for i in indices]
+    with open(inroot + "_wordcts.csv") as f:
+        all_lines = list(csv.read(f))
+        wordcts = [list(map(int, all_lines[i])) for i in indices]
+
+    t1 = time.time()
+    print("Time to taken to get batch of size %d from a total of %d \
+        documents is %.2f" %(batch_size, D, t1-t0))
+
+    return (wordids, wordcts)

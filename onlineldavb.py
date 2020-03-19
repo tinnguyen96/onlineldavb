@@ -21,6 +21,8 @@ import numpy as n
 from scipy.special import gammaln, psi
 
 import corpus
+from corpus import parse_doc_list
+from corpus import make_vocab
 
 n.random.seed(100000001)
 meanchangethresh = 0.001
@@ -32,56 +34,6 @@ def dirichlet_expectation(alpha):
     if (len(alpha.shape) == 1):
         return(psi(alpha) - psi(n.sum(alpha)))
     return(psi(alpha) - psi(n.sum(alpha, 1))[:, n.newaxis])
-
-def parse_doc_list(docs, vocab):
-    """
-    Parse a document into a list of word ids and a list of counts,
-    or parse a set of documents into two lists of lists of word ids
-    and counts.
-
-    Arguments: 
-    docs:  List of D documents. Each document must be represented as
-           a single string. (Word order is unimportant.) Any
-           words not in the vocabulary will be ignored.
-    vocab: Dictionary mapping from words to integer ids.
-
-    Returns a pair of lists of lists. 
-
-    The first, wordids, says what vocabulary tokens are present in
-    each document. wordids[i][j] gives the jth unique token present in
-    document i. (Don't count on these tokens being in any particular
-    order.)
-
-    The second, wordcts, says how many times each vocabulary token is
-    present. wordcts[i][j] is the number of times that the token given
-    by wordids[i][j] appears in document i.
-    """
-    if (type(docs).__name__ == 'str'):
-        temp = list()
-        temp.append(docs)
-        docs = temp
-
-    D = len(docs)
-    
-    wordids = list()
-    wordcts = list()
-    for d in range(0, D):
-        docs[d] = docs[d].lower()
-        docs[d] = re.sub(r'-', ' ', docs[d])
-        docs[d] = re.sub(r'[^a-z ]', '', docs[d])
-        docs[d] = re.sub(r' +', ' ', docs[d])
-        words = string.split(docs[d])
-        ddict = dict()
-        for word in words:
-            if (word in vocab):
-                wordtoken = vocab[word]
-                if (not wordtoken in ddict):
-                    ddict[wordtoken] = 0
-                ddict[wordtoken] += 1
-        wordids.append(ddict.keys())
-        wordcts.append(ddict.values())
-
-    return((wordids, wordcts))
 
 class OnlineLDA:
     """
@@ -107,11 +59,8 @@ class OnlineLDA:
         Note that if you pass the same set of D documents in every time and
         set kappa=0 this class can also be used to do batch VB.
         """
-        self._vocab = dict()
-        for word in vocab:
-            word = word.lower()
-            word = re.sub(r'[^a-z]', '', word)
-            self._vocab[word] = len(self._vocab)
+        t0 = time.time()
+        self._vocab = make_vocab(vocab)
 
         self._K = K
         self._W = len(self._vocab)
@@ -126,6 +75,10 @@ class OnlineLDA:
         self._lambda = 1*n.random.gamma(100., 1./100., (self._K, self._W))
         self._Elogbeta = dirichlet_expectation(self._lambda)
         self._expElogbeta = n.exp(self._Elogbeta)
+        t1 = time.time()
+        print("Time to initialize LDA is %.2f" %(t1-t0))
+        
+        return
 
     def do_e_step(self, wordids, wordcts):
         batchD = len(wordids)
@@ -141,7 +94,6 @@ class OnlineLDA:
         it = 0
         meanchange = 0
         for d in range(0, batchD):
-            print sum(wordcts[d])
             # These are mostly just shorthand (but might help cache locality)
             ids = wordids[d]
             cts = wordcts[d]
@@ -160,7 +112,6 @@ class OnlineLDA:
                 # the update for gamma gives this update. Cf. Lee&Seung 2001.
                 gammad = self._alpha + expElogthetad * \
                     n.dot(cts / phinorm, expElogbetad.T)
-                print gammad[:, n.newaxis]
                 Elogthetad = dirichlet_expectation(gammad)
                 expElogthetad = n.exp(Elogthetad)
                 phinorm = n.dot(expElogthetad, expElogbetad) + 1e-100

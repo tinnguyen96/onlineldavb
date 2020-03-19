@@ -16,6 +16,9 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import sys, urllib2, re, string, time, threading
+from corpus import parse_doc_list
+from corpus import make_vocab
+import csv
 
 def get_random_wikipedia_article():
     """
@@ -110,12 +113,35 @@ def get_random_wikipedia_articles(n):
             wtlist[j].join()
     return (WikiThread.articles, WikiThread.articlenames)
 
-if __name__ == '__main__':
+
+def save_random_wikipedia_articles(n):
+    (docset, articlenames) = get_random_wikipedia_articles(n)
+    vocab = file('./dictnostops.txt').readlines()
+    vocabdict = make_vocab(vocab)
     t0 = time.time()
+    (wordids, wordcts) = parse_doc_list(docset, vocabdict)
+    t1 = time.time()
+    print("Time taken by parse_doct_list %.2f" %(t1-t0))
+    with open("wiki_wordids.csv","w") as f:
+        wr = csv.writer(f)
+        wr.writerows(wordids)
+    with open("wiki_wordcts.csv","w") as f:
+        wr = csv.writer(f)
+        wr.writerows(wordcts)
+    t2 = time.time()
+    print("Tme taken by writing to csv is %.2f" %(t2-t1))
+    return 
+
+if __name__ == '__main__':
+    
+    # number of wiki documents to download
+    num = int(sys.argv[1])
 
     (articles, articlenames) = get_random_wikipedia_articles(1)
     for i in range(0, len(articles)):
         print articlenames[i]
 
+    t0 = time.time()
+    save_random_wikipedia_articles(num)
     t1 = time.time()
-    print 'took %f' % (t1 - t0)
+    print("It took %f to download %d documents" % (t1 - t0, num))

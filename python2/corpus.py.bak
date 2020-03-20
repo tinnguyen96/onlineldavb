@@ -1,5 +1,5 @@
 import os
-
+from itertools import izip
 import re
 import string
 import time
@@ -25,9 +25,9 @@ class corpus:
 
     def read_data(self, filename):
         if not os.path.exists(filename):
-            print('no data file, please check it')
+            print 'no data file, please check it'
             return
-        print('reading data from %s.' % filename)
+        print 'reading data from %s.' % filename
 
         for line in file(filename): 
             ss = line.strip().split()
@@ -52,7 +52,7 @@ class corpus:
             if (len(self.docs) >= 10000):
                 break
         self.num_docs = len(self.docs)
-        print("finished reading %d docs." % self.num_docs)
+        print "finished reading %d docs." % self.num_docs
 
 # def read_data(filename):
 #     c = corpus()
@@ -171,8 +171,8 @@ def parse_doc_list(docs, vocab):
                 if (not wordtoken in ddict):
                     ddict[wordtoken] = 0
                 ddict[wordtoken] += 1
-        wordids.append(list(ddict.keys()))
-        wordcts.append(list(ddict.values()))
+        wordids.append(ddict.keys())
+        wordcts.append(ddict.values())
 
     return((wordids, wordcts))
 
@@ -217,11 +217,11 @@ def get_batch_from_disk(inroot, D, batch_size=None):
 
     return (wordids, wordcts)
 
+
 def split_document(docids, doccts, ratio=0.75):
     """
     Split a document into an observed and a held-out part, enforcing
-    that the set of unique words in each part are disjoint. Don't 
-    split if the document has only one word!
+    that the set of unique words in each part are disjoint. 
     Inputs:
         docids = list of ints
         doccts = list of ints
@@ -232,7 +232,6 @@ def split_document(docids, doccts, ratio=0.75):
         wordho_ids
         wordho_cts
     """
-    assert(len(docids)>1), "Tried to split a one-word document"
     Mobs = int(math.floor(len(docids)*ratio))
     obsind = list(range(0, Mobs))
     hoind = list(range(Mobs,len(docids)))

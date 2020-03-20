@@ -1,6 +1,7 @@
-import pickle, string, numpy, getopt, sys, random, time, re, pprint
+import cPickle, string, numpy, getopt, sys, random, time, re, pprint
 
 import onlineldavb
+import wikirandom
 import corpus
 
 def main():
@@ -18,11 +19,11 @@ def main():
     
     with open(infile) as f:
         D = sum(1 for line in f)
-    print(("Training corpus has %d documents" %D))
+    print("Training corpus has %d documents" %D)
 
     with open(heldoutfile) as f:
         D_ = sum(1 for line in f)
-    print(("Held-out corpus has %d documents" %D_))
+    print("Held-out corpus has %d documents" %D_)
 
     # Set random seed for replicability
     seed = int(sys.argv[3])
@@ -37,7 +38,7 @@ def main():
     max_iter = 100
 
     # Our vocabulary
-    vocab = open('./dictnostops.txt').readlines()
+    vocab = file('./dictnostops.txt').readlines()
     W = len(vocab)
 
     # Initialize the algorithm with alpha=1/K, eta=1/K, tau_0=1024, kappa=0.7
@@ -54,8 +55,8 @@ def main():
         (howordids,howordcts) = \
             corpus.get_batch_from_disk(heldoutroot, D_, None)
         LL = olda.log_likelihood_docs(howordids,howordcts)
-        print('%d:  rho_t = %f,  held-out log-likelihood = %f' % \
-            (iteration, olda._rhot, LL))
+        print '%d:  rho_t = %f,  held-out log-likelihood = %f' % \
+            (iteration, olda._rhot, LL)
 
 if __name__ == '__main__':
     main()

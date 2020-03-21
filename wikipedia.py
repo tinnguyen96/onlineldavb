@@ -1,6 +1,6 @@
 import pickle, string, numpy, getopt, sys, random, time, re, pprint
 
-import onlineldavb
+import topicmodel
 import corpus
 
 def main():
@@ -41,7 +41,7 @@ def main():
     W = len(vocab)
 
     # Initialize the algorithm with alpha=1/K, eta=1/K, tau_0=1024, kappa=0.7
-    olda = onlineldavb.OnlineLDA(vocab, K, D, 1./K, 0.01, 1024., 0.7)
+    olda = topicmodelvb.OnlineLDA(vocab, K, D, 1./K, 0.01, 1024., 0.7)
     # Run until we've seen D documents. (Feel free to interrupt *much*
     # sooner than this.)
     for iteration in range(0, max_iter):

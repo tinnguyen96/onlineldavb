@@ -14,28 +14,30 @@ meanchangethresh = 0.001
 
 def dirichlet_expectation(alpha):
     """
-    For a vector theta ~ Dir(alpha), computes E[log(theta)] given alpha.
+    Inputs:
+        alpha: K x V, the Dirichlet parameters are stored in rows.
+    Outputs:
+        For a vector theta ~ Dir(alpha), computes E[log(theta)] given alpha.
     """
     if (len(alpha.shape) == 1):
         return(psi(alpha) - psi(n.sum(alpha)))
     return(psi(alpha) - psi(n.sum(alpha, 1))[:, n.newaxis])
 
-class TopicModel:
+class _TopicModel:
     """
-    
+    Skeleton for SVI training of topic models (LDA 1/K or SB-LDA).
     """
 
-    def __init__(self, vocab, K, D, alpha, eta, tau0, kappa):
+    def __init__(self, vocab, K, D, alpha0, eta, tau0, kappa):
         """
         Arguments:
         K: Number of topics
         vocab: A set of words to recognize. When analyzing documents, any word
            not in this set will be ignored.
-        D: Total number of documents in the population. For a fixed corpus,
-           this is the size of the corpus. In the truly online setting, this
-           can be an estimate of the maximum number of documents that
-           could ever be seen.
-        alpha: Hyperparameter for prior on weight vectors theta
+        D: Total number of documents in the population. 
+        alpha0: for LDA 1/K, alpha = alpha0/K is the hyperparameter for prior on topic 
+            proportions theta_d. For SB-LDA, alpha0 is governs the stick-breaking
+            Beta(1,alpha0). 
         eta: Hyperparameter for prior on topics beta
         tau0: A (positive) learning parameter that downweights early iterations
         kappa: Learning rate: exponential decay rate---should be between
@@ -50,7 +52,6 @@ class TopicModel:
         self._K = K
         self._W = len(self._vocab)
         self._D = D
-        self._alpha = alpha
         self._eta = eta
         self._tau0 = tau0 + 1
         self._kappa = kappa
@@ -61,15 +62,122 @@ class TopicModel:
         self._Elogbeta = dirichlet_expectation(self._lambda)
         self._expElogbeta = n.exp(self._Elogbeta)
         t1 = time.time()
-        print(("Time to initialize LDA is %.2f" %(t1-t0)))
+        print(("Time to initialize topic model is %.2f" %(t1-t0)))
         
         return
 
+    def update_lambda(self, wordids, wordcts):
+        """
+        First does an E step on the mini-batch given in wordids and
+        wordcts, then uses the result of that E step to update the
+        variational parameter matrix lambda.
+
+        Arguments:
+        docs:  List of D documents. Each document must be represented
+               as a string. (Word order is unimportant.) Any
+               words not in the vocabulary will be ignored.
+    
+        Returns variational parameters for per-document topic proportions.
+        """
+
+        # rhot will be between 0 and 1, and says how much to weight
+        # the information we got from this mini-batch.
+        rhot = pow(self._tau0 + self._updatect, -self._kappa)
+        self._rhot = rhot
+        # Do an E step to update gamma, phi | lambda for this
+        # mini-batch. This also returns the information about phi that
+        # we need to update lambda.
+        varparams, sstats = self.do_e_step(wordids, wordcts)
+        # Estimate held-out likelihood for current values of lambda.
+        # Update lambda based on documents.
+        self._lambda = self._lambda * (1-rhot) + \
+            rhot * (self._eta + self._D * sstats / len(wordids))
+        self._Elogbeta = dirichlet_expectation(self._lambda)
+        self._expElogbeta = n.exp(self._Elogbeta)
+        self._updatect += 1
+
+        return varparams
+
+    def log_likelihood_one(self, wordobs_ids, wordobs_cts, wordho_ids, \
+                      wordho_cts):
+        """
+        Inputs:
+            wordobs_ids: list, index in vocab of unique observed words
+            wordobs_cts: list, number of occurences of each unique observed word
+            wordho_ids: list, index in vocab of held-out words
+            wordho_cts: list, number of occurences of each unique held-out word
+        Outputs:
+            average log-likelihood of held-out words for the given document
+        """
+        # theta_means should be 1 x self._K
+        theta_means = self.theta_means(wordobs_ids, wordobs_cts)
+        # lambda_sums should be self._K x 1
+        lambda_sums = n.sum(self._lambda, axis=1) 
+        # lambda_means should be self._K x self._W, rows suming to 1
+        lambda_means = self._lambda/lambda_sums[:, n.newaxis] 
+        Mho = list(range(0,len(wordho_ids)))
+        proba = [wordho_cts[i]*n.log(n.dot(theta_means,lambda_means[:,wordho_ids[i]])) \
+                for i in Mho]
+        # average across all held-out words
+        tot = sum(wordho_cts)
+        return sum(proba)/tot
+
+    def log_likelihood_docs(self, wordids, wordcts):
+        """
+        Inputs:
+            wordids: list of lists
+            wordcts: list of lists
+        Outputs:
+        """ 
+        t0 = time.time()
+        M = len(wordids)
+        log_likelihoods = []
+        for i in range(M):
+            docids = wordids[i] # list 
+            doccts = wordcts[i] # list
+            # only evaluate log-likelihood if non-trivial document
+            if len(docids) > 1:
+                wordobs_ids, wordobs_cts, wordho_ids, wordho_cts = \
+                    split_document(docids, doccts)
+                doc_likelihood = \
+                    self.log_likelihood_one(wordobs_ids, wordobs_cts, wordho_ids, wordho_cts)
+                log_likelihoods.append(doc_likelihood)
+        t1 = time.time()
+        # print("Time taken to evaluate log-likelihood %.2f" %(t1-t0))
+        return n.mean(log_likelihoods)
+    
+class LDA(_TopicModel):
+    """
+    Inherit _TopicModel to train LDA 1/K. 
+    """
+
+    def __init__(self, vocab, K, D, alpha0, eta, tau0, kappa):
+        """
+        Arguments:
+        K: Number of topics
+        vocab: A set of words to recognize. When analyzing documents, any word
+           not in this set will be ignored.
+        D: Total number of documents in the population. 
+        alpha0:
+        eta: Hyperparameter for prior on topics beta
+        tau0: A (positive) learning parameter that downweights early iterations
+        kappa: Learning rate: exponential decay rate---should be between
+             (0.5, 1.0] to guarantee asymptotic convergence.
+
+        Note that if you pass the same set of D documents in every time and
+        set kappa=0 this class can also be used to do batch VB.
+        """
+        self._alpha = alpha0/K
+        _TopicModel.__init__(self,  vocab, K, D, alpha0, eta, tau0, kappa)
+        
+        return
+    
     def do_e_step(self, wordids, wordcts):
         batchD = len(wordids)
 
         # Initialize the variational distribution q(theta|gamma) for
         # the mini-batch
+        # each gamma[:,:] has mean 1 and variance 0.01
         gamma = 1*n.random.gamma(100., 1./100., (batchD, self._K))
         Elogtheta = dirichlet_expectation(gamma)
         expElogtheta = n.exp(Elogtheta)
@@ -115,330 +223,148 @@ class TopicModel:
         # = \sum_d n_{dw} * exp{Elogtheta_{dk} + Elogbeta_{kw}} / phinorm_{dw}.
         sstats = sstats * self._expElogbeta
 
-        return((gamma, sstats))
+        return (gamma,sstats) 
 
-    def do_e_step_docs(self, docs):
-        """
-        Given a mini-batch of documents, estimates the parameters
-        gamma controlling the variational distribution over the topic
-        weights for each document in the mini-batch.
-
-        Arguments:
-        docs:  List of D documents. Each document must be represented
-               as a string. (Word order is unimportant.) Any
-               words not in the vocabulary will be ignored.
-
-        Returns a tuple containing the estimated values of gamma,
-        as well as sufficient statistics needed to update lambda.
-        """
-        # This is to handle the case where someone just hands us a single
-        # document, not in a list.
-        if (type(docs).__name__ == 'string'):
-            temp = list()
-            temp.append(docs)
-            docs = temp
-
-        (wordids, wordcts) = parse_doc_list(docs, self._vocab)
-
-        return self.do_e_step(wordids, wordcts)
-    
-#         batchD = len(docs)
-
-#         # Initialize the variational distribution q(theta|gamma) for
-#         # the mini-batch
-#         gamma = 1*n.random.gamma(100., 1./100., (batchD, self._K))
-#         Elogtheta = dirichlet_expectation(gamma)
-#         expElogtheta = n.exp(Elogtheta)
-
-#         sstats = n.zeros(self._lambda.shape)
-#         # Now, for each document d update that document's gamma and phi
-#         it = 0
-#         meanchange = 0
-#         for d in range(0, batchD):
-#             # These are mostly just shorthand (but might help cache locality)
-#             ids = wordids[d]
-#             cts = wordcts[d]
-#             gammad = gamma[d, :]
-#             Elogthetad = Elogtheta[d, :]
-#             expElogthetad = expElogtheta[d, :]
-#             expElogbetad = self._expElogbeta[:, ids]
-#             # The optimal phi_{dwk} is proportional to 
-#             # expElogthetad_k * expElogbetad_w. phinorm is the normalizer.
-#             phinorm = n.dot(expElogthetad, expElogbetad) + 1e-100
-#             # Iterate between gamma and phi until convergence
-#             for it in range(0, 100):
-#                 lastgamma = gammad
-#                 # We represent phi implicitly to save memory and time.
-#                 # Substituting the value of the optimal phi back into
-#                 # the update for gamma gives this update. Cf. Lee&Seung 2001.
-#                 gammad = self._alpha + expElogthetad * \
-#                     n.dot(cts / phinorm, expElogbetad.T)
-#                 Elogthetad = dirichlet_expectation(gammad)
-#                 expElogthetad = n.exp(Elogthetad)
-#                 phinorm = n.dot(expElogthetad, expElogbetad) + 1e-100
-#                 # If gamma hasn't changed much, we're done.
-#                 meanchange = n.mean(abs(gammad - lastgamma))
-#                 if (meanchange < meanchangethresh):
-#                     break
-#             gamma[d, :] = gammad
-#             # Contribution of document d to the expected sufficient
-#             # statistics for the M step.
-#             sstats[:, ids] += n.outer(expElogthetad.T, cts/phinorm)
-
-#         # This step finishes computing the sufficient statistics for the
-#         # M step, so that
-#         # sstats[k, w] = \sum_d n_{dw} * phi_{dwk} 
-#         # = \sum_d n_{dw} * exp{Elogtheta_{dk} + Elogbeta_{kw}} / phinorm_{dw}.
-#         sstats = sstats * self._expElogbeta
-
-#         return((gamma, sstats))
-
-    def update_lambda_docs(self, docs):
-        """
-        First does an E step on the mini-batch given in wordids and
-        wordcts, then uses the result of that E step to update the
-        variational parameter matrix lambda.
-
-        Arguments:
-        docs:  List of D documents. Each document must be represented
-               as a string. (Word order is unimportant.) Any
-               words not in the vocabulary will be ignored.
-
-        Returns gamma, the parameters to the variational distribution
-        over the topic weights theta for the documents analyzed in this
-        update.
-
-        Also returns an estimate of the variational bound for the
-        entire corpus for the OLD setting of lambda based on the
-        documents passed in. This can be used as a (possibly very
-        noisy) estimate of held-out likelihood.
-        """
-
-        # rhot will be between 0 and 1, and says how much to weight
-        # the information we got from this mini-batch.
-        rhot = pow(self._tau0 + self._updatect, -self._kappa)
-        self._rhot = rhot
-        # Do an E step to update gamma, phi | lambda for this
-        # mini-batch. This also returns the information about phi that
-        # we need to update lambda.
-        (gamma, sstats) = self.do_e_step_docs(docs)
-        # Estimate held-out likelihood for current values of lambda.
-        bound = self.approx_bound_docs(docs, gamma)
-        # Update lambda based on documents.
-        self._lambda = self._lambda * (1-rhot) + \
-            rhot * (self._eta + self._D * sstats / len(docs))
-        self._Elogbeta = dirichlet_expectation(self._lambda)
-        self._expElogbeta = n.exp(self._Elogbeta)
-        self._updatect += 1
-
-        return(gamma, bound)
-
-    def update_lambda(self, wordids, wordcts):
-        """
-        First does an E step on the mini-batch given in wordids and
-        wordcts, then uses the result of that E step to update the
-        variational parameter matrix lambda.
-
-        Arguments:
-        docs:  List of D documents. Each document must be represented
-               as a string. (Word order is unimportant.) Any
-               words not in the vocabulary will be ignored.
-
-        Returns gamma, the parameters to the variational distribution
-        over the topic weights theta for the documents analyzed in this
-        update.
-
-        Also returns an estimate of the variational bound for the
-        entire corpus for the OLD setting of lambda based on the
-        documents passed in. This can be used as a (possibly very
-        noisy) estimate of held-out likelihood.
-        """
-
-        # rhot will be between 0 and 1, and says how much to weight
-        # the information we got from this mini-batch.
-        rhot = pow(self._tau0 + self._updatect, -self._kappa)
-        self._rhot = rhot
-        # Do an E step to update gamma, phi | lambda for this
-        # mini-batch. This also returns the information about phi that
-        # we need to update lambda.
-        (gamma, sstats) = self.do_e_step(wordids, wordcts)
-        # Estimate held-out likelihood for current values of lambda.
-        bound = self.approx_bound(wordids, wordcts, gamma)
-        # Update lambda based on documents.
-        self._lambda = self._lambda * (1-rhot) + \
-            rhot * (self._eta + self._D * sstats / len(wordids))
-        self._Elogbeta = dirichlet_expectation(self._lambda)
-        self._expElogbeta = n.exp(self._Elogbeta)
-        self._updatect += 1
-
-        return(gamma, bound)
-
-    def log_likelihood_one(self, wordobs_ids, wordobs_cts, wordho_ids, \
-                      wordho_cts):
+    def theta_means(self, wordobs_ids, wordobs_cts):
         """
         Inputs:
-            wordobs_ids: list, index in vocab of unique observed words
-            wordobs_cts: list, number of occurences of each unique observed word
-            wordho_ids: list, index in vocab of held-out words
-            wordho_cts: list, number of occurences of each unique held-out word
+            wordobs_ids = list
+            wordobs_cts = list
         Outputs:
-            average log-likelihood of held-out words for the given document
+            Report E(q(theta(k)) across topics, where q(theta) is variational 
+            approximation of the new document's topic proportions.
         """
-
         # do E-step for the document represented by the observed words
         # gamma should be 1 x self._K
         gamma, _ = self.do_e_step([wordobs_ids],[wordobs_cts]) 
+        # q(theta|gamma) is Dirichlet, so marginal means are average of Dirichlet parameters
+        theta = gamma/n.sum(gamma) 
+        theta = theta.flatten(order='C') 
+        return theta
 
-        # compute log-likelihood for each unique held-out word
-        theta_means = gamma/n.sum(gamma) 
-        # theta_means should be (self._K,)
-        theta_means = theta_means.flatten(order='C') 
-        # lambda_sums should be self._K x 1
-        lambda_sums = n.sum(self._lambda, axis=1) 
-        # lambda_means should be self._K x self._W, rows suming to 1
-        lambda_means = self._lambda/lambda_sums[:, n.newaxis] 
-        Mho = list(range(0,len(wordho_ids)))
-        proba = [wordho_cts[i]*n.log(n.dot(theta_means,lambda_means[:,wordho_ids[i]])) \
-                for i in Mho]
+class SB_LDA(_TopicModel):
+    """
+    Inherit _TopicModel to train SB-LDA at level K. 
+    """
 
-        # average across all held-out words
-        tot = sum(wordho_cts)
-        return sum(proba)/tot
+    def __init__(self, vocab, K, D, alpha0, eta, tau0, kappa):
+        """
+        Arguments:
+        K: Number of topics
+        vocab: A set of words to recognize. When analyzing documents, any word
+           not in this set will be ignored.
+        D: Total number of documents in the population. 
+        alpha0: Hyperparameter of the stick-breaking weights Beta(1,alpha0).
+        eta: Hyperparameter for prior on topics beta
+        tau0: A (positive) learning parameter that downweights early iterations
+        kappa: Learning rate: exponential decay rate---should be between
+             (0.5, 1.0] to guarantee asymptotic convergence.
 
-    def log_likelihood_docs(self, wordids, wordcts):
+        Note that if you pass the same set of D documents in every time and
+        set kappa=0 this class can also be used to do batch VB.
+        """
+        self._alpha0 = alpha0
+        _TopicModel.__init__(self,  vocab, K, D, alpha0, eta, tau0, kappa)
+         # for updating tau given phi
+        mask = n.zeros((self._K, self._K))
+        for i in range(self._K):
+            for j in range(self._K):
+                mask[i,j] = int(j > i)
+        self._fmask = mask # size (self._K, self._K)
+        # for updating phi given tau
+        self._bmask = mask.transpose()
+        backwardmask = n.zeros((self._K, self._K))
+        
+        return
+
+    def init_tau(self, batch_size):
         """
         Inputs:
-            wordids: list of lists
-            wordcts: list of lists
+            batch_size = number of documents being processed 
         Outputs:
-        """ 
-        t0 = time.time()
-        M = len(wordids)
-        log_likelihoods = []
-        for i in range(M):
-            docids = wordids[i] # list 
-            doccts = wordcts[i] # list
-            # only evaluate log-likelihood if non-trivial document
-            if len(docids) > 1:
-                wordobs_ids, wordobs_cts, wordho_ids, wordho_cts = \
-                    split_document(docids, doccts)
-                doc_likelihood = \
-                    self.log_likelihood_one(wordobs_ids, wordobs_cts, wordho_ids, wordho_cts)
-                log_likelihoods.append(doc_likelihood)
-        t1 = time.time()
-        # print("Time taken to evaluate log-likelihood %.2f" %(t1-t0))
-        return n.mean(log_likelihoods)
-
-    def approx_bound(self, wordids, wordcts, gamma):
+            initialize tau to be uninformative about theta
+        Remarks:
+            try out some options in initialize tau
         """
-        Estimates the variational bound over *all documents* using only
-        the documents passed in as "docs." gamma is the set of parameters
-        to the variational distribution q(theta) corresponding to the
-        set of documents passed in.
-
-        The output of this function is going to be noisy, but can be
-        useful for assessing convergence.
-        """
-
-        # This is to handle the case where someone just hands us a single
-        # document, not in a list.
+        tau1 = n.random.gamma(100., 1./100., (batch_size, self._K))
+        tau2 = n.random.gamma(100*self._alpha0, 1./100., (batch_size, self._K))
+        return tau1, tau2
+    
+    def do_e_step(self, wordids, wordcts):
         batchD = len(wordids)
 
-        score = 0
-        Elogtheta = dirichlet_expectation(gamma)
-        expElogtheta = n.exp(Elogtheta)
-
-        # E[log p(docs | theta, beta)]
+        # Initialize the variational distribution q(pi|tau) for
+        # the mini-batch
+        tau1, tau2 = self.init_tau(batchD) # each has size batchD x self._K
+        sstats = n.zeros(self._lambda.shape) # shape (self._K, self._W)
+        
+        # Now, for each document d update that document's gamma and phi
+        it = 0
+        meanchange = 0
         for d in range(0, batchD):
-            gammad = gamma[d, :]
-            ids = wordids[d]
-            cts = n.array(wordcts[d])
-            phinorm = n.zeros(len(ids))
-            for i in range(0, len(ids)):
-                temp = Elogtheta[d, :] + self._Elogbeta[:, ids[i]]
-                tmax = max(temp)
-                phinorm[i] = n.log(sum(n.exp(temp - tmax))) + tmax
-            score += n.sum(cts * phinorm)
-#             oldphinorm = phinorm
-#             phinorm = n.dot(expElogtheta[d, :], self._expElogbeta[:, ids])
-#             print oldphinorm
-#             print n.log(phinorm)
-#             score += n.sum(cts * n.log(phinorm))
+            # These are mostly just shorthand (but might help cache locality)
+            ids = wordids[d] # list
+            cts = wordcts[d] # list
+            tau1d, tau2d = tau1[d, :], tau2[d, :] # each has size (self._K,)
+            Elogbetad = self._Elogbeta[:, ids] # (self._K, len(ids))
+            Elogpm1pd = dirichlet_expectation(n.column_stack((tau1d,tau2d)))
+            Elogpd = Elogpm1pd[:,0] # size (self._K,)
+            Elogm1pd = Elogpm1pd[:,1] # size (self._K,)
+            # for now, explicitly represent optimal phi to ensure correctness 
+            Elogthetad = Elogpd + n.dot(self._bmask, Elogm1pd) # shape (self._K,)
+            logphi = Elogthetad[:, n.newaxis] + Elogbetad # size (self._K, len(cts))
+            # normalize across rows
+            unormphi = n.exp(logphi)
+            phinorm = n.sum(unormphi, axis=0)+1e-100 # size should be 1 x len(cts)
+            phi = unormphi/phinorm[n.newaxis, :]
+            # Iterate between tau and phi until convergence
+            for it in range(0, 100):
+                lasttau1 = tau1d
+                lasttau2 = tau2d
+                tau1d = 1 + n.dot(phi, cts) # careful, dot of 2-D array with list!
+                tau2d = self._alpha0 + n.dot(n.dot(self._fmask, phi), cts) # careful, dot of 2-D array with list
+                Elogpm1pd = dirichlet_expectation(n.column_stack((tau1d,tau2d)))
+                Elogpd = Elogpm1pd[:,0] # size (self._K,)
+                Elogm1pd = Elogpm1pd[:,1] # size (self._K,)
+                # for now, explicitly represent optimal phi to ensure correctness 
+                Elogthetad = Elogpd + n.dot(self._bmask, Elogm1pd)
+                logphi = Elogthetad[:, n.newaxis] + Elogbetad # size (self._K, len(cts))
+                # normalize across rows
+                unormphi = n.exp(logphi)
+                phinorm = n.sum(unormphi, axis=0)+1e-100 # size should be 1 x len(cts)
+                phi = unormphi/phinorm[n.newaxis, :]
+                # If tau hasn't changed much, we're done.
+                meanchange = 0.5*n.mean(abs(lasttau1 - tau1d)) + 0.5*n.mean(abs(lasttau2 - tau2d))
+                if (meanchange < meanchangethresh):
+                    break
+            
+            tau1[d, :] = tau1d
+            tau2[d, :] = tau2d
+            sstats[:, ids] += n.multiply(phi,cts)
 
-        # E[log p(theta | alpha) - log q(theta | gamma)]
-        score += n.sum((self._alpha - gamma)*Elogtheta)
-        score += n.sum(gammaln(gamma) - gammaln(self._alpha))
-        score += sum(gammaln(self._alpha*self._K) - gammaln(n.sum(gamma, 1)))
+        return ((tau1, tau2), sstats)
 
-        # Compensate for the subsampling of the population of documents
-        score = score * self._D / len(wordids)
-
-        # E[log p(beta | eta) - log q (beta | lambda)]
-        score = score + n.sum((self._eta-self._lambda)*self._Elogbeta)
-        score = score + n.sum(gammaln(self._lambda) - gammaln(self._eta))
-        score = score + n.sum(gammaln(self._eta*self._W) - 
-                              gammaln(n.sum(self._lambda, 1)))
-
-        return(score)
-
-    def approx_bound_docs(self, docs, gamma):
+    def theta_means(self, wordobs_ids, wordobs_cts):
         """
-        Estimates the variational bound over *all documents* using only
-        the documents passed in as "docs." gamma is the set of parameters
-        to the variational distribution q(theta) corresponding to the
-        set of documents passed in.
-
-        The output of this function is going to be noisy, but can be
-        useful for assessing convergence.
+        Inputs:
+            wordobs_ids = list
+            wordobs_cts = list
+        Outputs:
+            Report E(q(theta(k)) across topics, where q(theta) is variational 
+            approximation of the new document's topic proportions.
+        Remarks:
         """
-
-        # This is to handle the case where someone just hands us a single
-        # document, not in a list.
-        if (type(docs).__name__ == 'string'):
-            temp = list()
-            temp.append(docs)
-            docs = temp
-
-        (wordids, wordcts) = parse_doc_list(docs, self._vocab)
-        batchD = len(docs)
-
-        score = 0
-        Elogtheta = dirichlet_expectation(gamma)
-        expElogtheta = n.exp(Elogtheta)
-
-        # E[log p(docs | theta, beta)]
-        for d in range(0, batchD):
-            gammad = gamma[d, :]
-            ids = wordids[d]
-            cts = n.array(wordcts[d])
-            phinorm = n.zeros(len(ids))
-            for i in range(0, len(ids)):
-                temp = Elogtheta[d, :] + self._Elogbeta[:, ids[i]]
-                tmax = max(temp)
-                phinorm[i] = n.log(sum(n.exp(temp - tmax))) + tmax
-            score += n.sum(cts * phinorm)
-#             oldphinorm = phinorm
-#             phinorm = n.dot(expElogtheta[d, :], self._expElogbeta[:, ids])
-#             print oldphinorm
-#             print n.log(phinorm)
-#             score += n.sum(cts * n.log(phinorm))
-
-        # E[log p(theta | alpha) - log q(theta | gamma)]
-        score += n.sum((self._alpha - gamma)*Elogtheta)
-        score += n.sum(gammaln(gamma) - gammaln(self._alpha))
-        score += sum(gammaln(self._alpha*self._K) - gammaln(n.sum(gamma, 1)))
-
-        # Compensate for the subsampling of the population of documents
-        score = score * self._D / len(docs)
-
-        # E[log p(beta | eta) - log q (beta | lambda)]
-        score = score + n.sum((self._eta-self._lambda)*self._Elogbeta)
-        score = score + n.sum(gammaln(self._lambda) - gammaln(self._eta))
-        score = score + n.sum(gammaln(self._eta*self._W) - 
-                              gammaln(n.sum(self._lambda, 1)))
-
-        return(score)
-
+        taus, _ = self.do_e_step([wordobs_ids],[wordobs_cts]) 
+        tau1, tau2 = taus[0], taus[1] # each's shape is 1 x self._K
+        # theta(k) = p(k) x prod_{i=1}^{k-1} (1-p(i)), each p(i) Beta(tau1(i), tau2(i))
+        # and they are independent because of mean-field.
+        Ep = tau1/(tau1+tau2)
+        Em1p = 1-Ep
+        cumu = n.cumprod(Em1p, axis=1) # shape (1 x self._K)
+        ratiop = Ep/Em1p
+        theta = n.multiply(ratiop, cumu) # shape (1 x self._K)
+        return theta
+    
 def main():
     infile = sys.argv[1]
     K = int(sys.argv[2])

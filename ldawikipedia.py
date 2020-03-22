@@ -1,11 +1,11 @@
 import pickle, string, numpy, getopt, sys, random, time, re, pprint
 
-import topicmodel
+import topicmodelvb
 import corpus
 
 def main():
     """
-    Load a wikipedia corpus in batches from disk and run LDA.
+    Load a wikipedia corpus in batches from disk and run LDA 1/K.
     """
 
     # The rootname, for instance wiki10k
@@ -40,8 +40,8 @@ def main():
     vocab = open('./dictnostops.txt').readlines()
     W = len(vocab)
 
-    # Initialize the algorithm with alpha=1/K, eta=1/K, tau_0=1024, kappa=0.7
-    olda = topicmodelvb.TopicModel(vocab, K, D, 1./K, 0.01, 1024., 0.7)
+    # Initialize the algorithm with alpha0=1 (alpha = alpha0/K), eta=0.01, tau_0=1024, kappa=0.7
+    lda = topicmodelvb.LDA(vocab, K, D, 1, 0.01, 1024., 0.7)
     # Run until we've seen D documents. (Feel free to interrupt *much*
     # sooner than this.)
     for iteration in range(0, max_iter):
@@ -49,13 +49,13 @@ def main():
         (wordids, wordcts) = \
             corpus.get_batch_from_disk(inroot, D, batchsize)
         # Give them to LDA
-        (gamma, bound) = olda.update_lambda(wordids, wordcts)
+        _ = lda.update_lambda(wordids, wordcts)
         # Compute average log-likelihood on held-out corpus
         (howordids,howordcts) = \
             corpus.get_batch_from_disk(heldoutroot, D_, None)
-        LL = olda.log_likelihood_docs(howordids,howordcts)
+        LL = lda.log_likelihood_docs(howordids,howordcts)
         print('%d:  rho_t = %f,  held-out log-likelihood = %f' % \
-            (iteration, olda._rhot, LL))
+            (iteration, lda._rhot, LL))
 
 if __name__ == '__main__':
     main()

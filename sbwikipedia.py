@@ -1,4 +1,10 @@
-# sbwikipedia.py
+"""
+Command-line arguments:
+- name of training corpus
+- name of test corpus
+- seed for randomness
+- minibatch size 
+"""
 
 import pickle, string, numpy, getopt, sys, random, time, re, pprint
 import os
@@ -33,7 +39,7 @@ def main():
     numpy.random.seed(seed)
 
     # The number of documents to analyze each iteration
-    batchsize = 16
+    batchsize = int(sys.argv[4])
 
     # The number of topics
     K = 100
@@ -51,6 +57,10 @@ def main():
     # Run until we've seen D documents. (Feel free to interrupt *much*
     # sooner than this.)
     train_time = 0
+    savedir = "sbldaK" + str(K) + "_D" + str(batchsize) + "_" + inroot + "_" + heldoutroot
+    LLsavename = savedir + "/LL_" + str(seed) + ".csv"
+    if not os.path.exists(savedir):
+        os.mkdir(savedir)
     for iteration in range(0, max_iter):
         t0 = time.time()
         # Load a random batch of articles from disk
@@ -71,11 +81,13 @@ def main():
             print('seed %d, iter %d:  rho_t = %f,  cumulative train time = %f, test time = %f, held-out log-likelihood = %f' % \
                 (seed, iteration, lda._rhot, train_time, test_time, LL))
             LL_list.append([iteration, train_time, LL])
-            savedir = "sbldaK" + str(K) + "_" + inroot + "_" + heldoutroot
-            if not os.path.exists(savedir):
-                os.mkdir(savedir)
-            savename = savedir + "/_" + str(seed) + ".csv"
-            numpy.savetxt(savename, LL_list)
+            numpy.savetxt(LLsavename, LL_list)
+        
+        # save topics every so number of iterations
+        if (seed == 0):
+            if (iteration % 100 == 0):
+                lambdaname = (savedir + "/lambda-%d.dat") % iteration
+                numpy.savetxt(lambdaname, lda._lambda)
 
 if __name__ == '__main__':
     main()

@@ -3,6 +3,7 @@
 import sys, re, time, string
 import numpy as n
 from scipy.special import gammaln, psi
+import warnings
 
 import corpus
 from corpus import parse_doc_list
@@ -186,6 +187,7 @@ class LDA(_TopicModel):
         # Now, for each document d update that document's gamma and phi
         it = 0
         meanchange = 0
+        converged = False
         for d in range(0, batchD):
             # These are mostly just shorthand (but might help cache locality)
             ids = wordids[d]
@@ -211,7 +213,11 @@ class LDA(_TopicModel):
                 # If gamma hasn't changed much, we're done.
                 meanchange = n.mean(abs(gammad - lastgamma))
                 if (meanchange < meanchangethresh):
+                    converged = True
                     break
+            # might have exited coordinate ascent without convergence
+            if (not converged):
+                warnings.warn("Exited E-step's coordinate ascent without convergence.")
             gamma[d, :] = gammad
             # Contribution of document d to the expected sufficient
             # statistics for the M step.

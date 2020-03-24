@@ -1,0 +1,36 @@
+"""
+
+# printtopics.py: Prints the words that are most prominent in a set of
+# topics.
+
+Example call:
+python printtopics.py dictnostops.txt lambda-100.dat
+"""
+
+import sys, os, re, random, math, urllib2, time, cPickle
+import numpy
+
+import onlineldavb
+
+def main():
+    """
+    Displays topics fit by onlineldavb.py. The first column gives the
+    (expected) most prominent words in the topics, the second column
+    gives their (expected) relative prominence.
+    """
+    vocab = str.split(file(sys.argv[1]).read())
+    testlambda = numpy.loadtxt(sys.argv[2])
+
+    for k in range(0, len(testlambda)):
+        lambdak = list(testlambda[k, :])
+        lambdak = lambdak / sum(lambdak)
+        temp = zip(lambdak, range(0, len(lambdak)))
+        temp = sorted(temp, key = lambda x: x[0], reverse=True)
+        print 'topic %d:' % (k)
+        # feel free to change the "53" here to whatever fits your screen nicely.
+        for i in range(0, 53):
+            print '%20s  \t---\t  %.4f' % (vocab[temp[i][1]], temp[i][0])
+        print
+
+if __name__ == '__main__':
+    main()

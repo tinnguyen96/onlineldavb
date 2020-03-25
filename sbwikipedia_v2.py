@@ -9,7 +9,7 @@ Command-line arguments:
 import pickle, string, numpy, getopt, sys, random, time, re, pprint
 import os
 
-import topicmodelvb
+import topicmodelvb_v2
 import corpus
 
 def main():
@@ -53,11 +53,11 @@ def main():
     W = len(vocab)
 
     # Initialize the algorithm with alpha0=1 (alpha = alpha0/K), eta=0.01, tau_0=1024, kappa=0.7
-    lda = topicmodelvb.SB_LDA(vocab, K, D, 1, 0.01, 1024., 0.7)
+    lda = topicmodelvb_v2.SB_LDA(vocab, K, D, 1, 0.01, 1024., 0.7)
     # Run until we've seen D documents. (Feel free to interrupt *much*
     # sooner than this.)
     train_time = 0
-    savedir = "sbldaK" + str(K) + "_D" + str(batchsize) + "_" + inroot + "_" + heldoutroot
+    savedir = "sbldav2K" + str(K) + "_D" + str(batchsize) + "_" + inroot + "_" + heldoutroot
     LLsavename = savedir + "/LL_" + str(seed) + ".csv"
     if not os.path.exists(savedir):
         os.mkdir(savedir)

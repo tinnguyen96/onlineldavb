@@ -2,3 +2,5 @@
 *.dat
 *.pyc
 *.out
+*.log-*
+*.sh

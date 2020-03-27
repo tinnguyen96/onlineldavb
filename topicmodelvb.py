@@ -29,13 +29,14 @@ class _TopicModel:
     Skeleton for SVI training of topic models (LDA 1/K or SB-LDA).
     """
 
-    def __init__(self, vocab, K, D, alpha0, eta, tau0, kappa):
+    def __init__(self, vocab, K, topicpath, D, alpha0, eta, tau0, kappa):
         """
         Arguments:
         K: Number of topics
         vocab: A set of words to recognize. When analyzing documents, any word
            not in this set will be ignored.
         D: Total number of documents in the population. 
+        topicpath: Path to some pre-trained topics' Dirichlet parameters. User
         alpha0: for LDA 1/K, alpha = alpha0/K is the hyperparameter for prior on topic 
             proportions theta_d. For SB-LDA, alpha0 is governs the stick-breaking
             Beta(1,alpha0). 
@@ -44,11 +45,12 @@ class _TopicModel:
         kappa: Learning rate: exponential decay rate---should be between
              (0.5, 1.0] to guarantee asymptotic convergence.
 
-        Note that if you pass the same set of D documents in every time and
-        set kappa=0 this class can also be used to do batch VB.
+        Remarks:
+            User should make sure the topics from topicpath are compatible with 
+            K and vocab.
         """
         t0 = time.time()
-        self._vocab = make_vocab(vocab)
+        self._vocab, self._idxtoword = make_vocab(vocab)
 
         self._K = K
         self._W = len(self._vocab)
@@ -58,8 +60,13 @@ class _TopicModel:
         self._kappa = kappa
         self._updatect = 0
 
-        # Initialize the variational distribution q(beta|lambda)
-        self._lambda = 1*n.random.gamma(100., 1./100., (self._K, self._W))
+        # Initialize the variational distribution q(beta|lambda) if topicpath is not None
+        if (topicpath is None):
+            self._lambda = 1*n.random.gamma(100., 1./100., (self._K, self._W))
+        else:
+            self._lambda = n.loadtxt(topicpath)
+            assert self._lambda.shape==(self._K,self._W), "Wrong shape of topics"
+            print("Successfully loaded topics from %s" %topicpath)
         self._Elogbeta = dirichlet_expectation(self._lambda)
         self._expElogbeta = n.exp(self._Elogbeta)
         t1 = time.time()
@@ -152,12 +159,13 @@ class LDA(_TopicModel):
     Inherit _TopicModel to train LDA 1/K. 
     """
 
-    def __init__(self, vocab, K, D, alpha0, eta, tau0, kappa):
+    def __init__(self, vocab, K, topicpath, D, alpha0, eta, tau0, kappa):
         """
         Arguments:
         K: Number of topics
         vocab: A set of words to recognize. When analyzing documents, any word
            not in this set will be ignored.
+        topicpath:
         D: Total number of documents in the population. 
         alpha0:
         eta: Hyperparameter for prior on topics beta
@@ -169,7 +177,7 @@ class LDA(_TopicModel):
         set kappa=0 this class can also be used to do batch VB.
         """
         self._alpha = alpha0/K
-        _TopicModel.__init__(self,  vocab, K, D, alpha0, eta, tau0, kappa)
+        _TopicModel.__init__(self, vocab, K, topicpath, D, alpha0, eta, tau0, kappa)
         
         return
     
@@ -216,9 +224,11 @@ class LDA(_TopicModel):
                     converged = True
                     break
             # might have exited coordinate ascent without convergence
+            """
             if (not converged):
                 print("Coordinate ascent in E-step didn't converge")
                 print("Last change in gammad %f" %meanchange)
+            """
             gamma[d, :] = gammad
             # Contribution of document d to the expected sufficient
             # statistics for the M step.
@@ -254,24 +264,22 @@ class SB_LDA(_TopicModel):
     Inherit _TopicModel to train SB-LDA at level K. 
     """
 
-    def __init__(self, vocab, K, D, alpha0, eta, tau0, kappa):
+    def __init__(self, vocab, K, topicpath, D, alpha0, eta, tau0, kappa):
         """
         Arguments:
         K: Number of topics
         vocab: A set of words to recognize. When analyzing documents, any word
            not in this set will be ignored.
+        topicpath: 
         D: Total number of documents in the population. 
         alpha0: Hyperparameter of the stick-breaking weights Beta(1,alpha0).
         eta: Hyperparameter for prior on topics beta
         tau0: A (positive) learning parameter that downweights early iterations
         kappa: Learning rate: exponential decay rate---should be between
              (0.5, 1.0] to guarantee asymptotic convergence.
-
-        Note that if you pass the same set of D documents in every time and
-        set kappa=0 this class can also be used to do batch VB.
         """
         self._alpha0 = alpha0
-        _TopicModel.__init__(self,  vocab, K, D, alpha0, eta, tau0, kappa)
+        _TopicModel.__init__(self, vocab, K, topicpath, D, alpha0, eta, tau0, kappa)
          # for updating tau given phi
         mask = n.zeros((self._K, self._K))
         for i in range(self._K):
@@ -287,6 +295,22 @@ class SB_LDA(_TopicModel):
         print(self._bmask)
         """
         return
+    
+    def init_phi(self, ids):
+        """
+        Inputs:
+            ids:
+        Outputs:
+            initialize phi as if all Elogthetad is equal to each other i.e. 
+            only considering effect of topics rather than topic proportions.
+        """
+        Elogbetad = self._Elogbeta[:, ids] # (self._K, len(ids))
+        logphi = Elogbetad # size (self._K, len(ids))
+         # normalize across rows
+        unormphi = n.exp(logphi)
+        phinorm = n.sum(unormphi, axis=0)+1e-100 # size should be 1 x len(cts)
+        phi = unormphi/phinorm[n.newaxis, :]
+        return phi
 
     def init_tau(self, batch_size):
         """
@@ -302,6 +326,49 @@ class SB_LDA(_TopicModel):
         tau2 = n.random.gamma(100*self._alpha0, 1./100., (batch_size, self._K))
         tau2[:,self._K-1] = 0 # corner case
         return tau1, tau2
+    
+    def opt_phi(self, tau1d, tau2d, ids):
+        """
+        Inputs:
+            tau1d:
+            tau2d:
+            ids:
+        Outputs:
+        """
+        Elogbetad = self._Elogbeta[:, ids] # (self._K, len(ids))
+        Elogpm1pd = dirichlet_expectation(n.column_stack((tau1d,tau2d)))
+        Elogpd = Elogpm1pd[:,0] # shape (self._K,). 
+        Elogm1pd = Elogpm1pd[:,1] # shape (self._K,). Last value is -Inf since Beta(1,0), need to fix.
+        Elogm1pd[self._K-1] = 0
+        """
+        print("Elogm1pd")
+        print(Elogm1pd)
+        """
+        # for now, explicitly represent optimal phi to ensure correctness 
+        Elogthetad = Elogpd + n.dot(self._bmask, Elogm1pd) # shape (self._K,)
+        """
+        print("Elogthetad")
+        print(Elogthetad)
+        """
+        logphi = Elogthetad[:, n.newaxis] + Elogbetad # size (self._K, len(cts))
+        # normalize across rows
+        unormphi = n.exp(logphi)
+        phinorm = n.sum(unormphi, axis=0)+1e-100 # size should be 1 x len(cts)
+        phi = unormphi/phinorm[n.newaxis, :]
+        return phi
+    
+    def opt_tau(self, phi, cts):
+        """
+        Inputs:
+            phi:
+            cts:
+        Outputs:
+        """
+        tau1d = 1 + n.dot(phi, cts) # careful, dot of 2-D array with list!
+        tau2d = self._alpha0 + n.dot(n.dot(self._fmask, phi), cts) # careful, dot of 2-D array with list
+        tau1d[self._K - 1] = 1
+        tau2d[self._K - 1] = 0
+        return (tau1d, tau2d)
     
     def do_e_step(self, wordids, wordcts):
         batchD = len(wordids)
@@ -319,57 +386,14 @@ class SB_LDA(_TopicModel):
             ids = wordids[d] # list
             cts = wordcts[d] # list
             tau1d, tau2d = tau1[d, :], tau2[d, :] # each has size (self._K,)
-            """
-            print(tau1)
-            print(tau2)
-            """
-            Elogbetad = self._Elogbeta[:, ids] # (self._K, len(ids))
-            Elogpm1pd = dirichlet_expectation(n.column_stack((tau1d,tau2d)))
-            Elogpd = Elogpm1pd[:,0] # shape (self._K,). 
-            Elogm1pd = Elogpm1pd[:,1] # shape (self._K,). Last value is -Inf since Beta(1,0), need to fix.
-            Elogm1pd[self._K-1] = 0
-            """
-            print("Elogm1pd")
-            print(Elogm1pd)
-            """
-            # for now, explicitly represent optimal phi to ensure correctness 
-            Elogthetad = Elogpd + n.dot(self._bmask, Elogm1pd) # shape (self._K,)
-            """
-            print("Elogthetad")
-            print(Elogthetad)
-            """
-            logphi = Elogthetad[:, n.newaxis] + Elogbetad # size (self._K, len(cts))
-            # normalize across rows
-            unormphi = n.exp(logphi)
-            phinorm = n.sum(unormphi, axis=0)+1e-100 # size should be 1 x len(cts)
-            phi = unormphi/phinorm[n.newaxis, :]
+            phi = self.opt_phi(tau1d, tau2d, ids)
             # Iterate between tau and phi until convergence
             converged = False
             for it in range(0, 200):
                 lasttau1 = tau1d
                 lasttau2 = tau2d
-                tau1d = 1 + n.dot(phi, cts) # careful, dot of 2-D array with list!
-                tau2d = self._alpha0 + n.dot(n.dot(self._fmask, phi), cts) # careful, dot of 2-D array with list
-                tau1d[self._K - 1] = 1
-                tau2d[self._K - 1] = 0
-                Elogpm1pd = dirichlet_expectation(n.column_stack((tau1d,tau2d)))
-                """
-                print(tau1d)
-                print(tau2d)
-                """
-                Elogpd = Elogpm1pd[:,0] # size (self._K,)
-                Elogm1pd = Elogpm1pd[:,1] # size (self._K,)
-                Elogm1pd[self._K-1] = 0
-                """
-                print(Elogm1pd[0])
-                """
-                # for now, explicitly represent optimal phi to ensure correctness 
-                Elogthetad = Elogpd + n.dot(self._bmask, Elogm1pd)
-                logphi = Elogthetad[:, n.newaxis] + Elogbetad # size (self._K, len(cts))
-                # normalize across rows
-                unormphi = n.exp(logphi)
-                phinorm = n.sum(unormphi, axis=0)+1e-100 # size should be 1 x len(cts)
-                phi = unormphi/phinorm[n.newaxis, :]
+                tau1d, tau2d = self.opt_tau(phi, cts)
+                phi = self.opt_phi(tau1d, tau2d, ids)
                 # If tau hasn't changed much, we're done.
                 meanchange = 0.5*n.mean(abs(lasttau1 - tau1d)) + 0.5*n.mean(abs(lasttau2 - tau2d))
                 if (meanchange < meanchangethresh):
@@ -382,6 +406,46 @@ class SB_LDA(_TopicModel):
                 print("Coordinate ascent in E-step didn't converge")
                 print("Last change in taud %f" %meanchange)
             """
+            tau1[d, :] = tau1d
+            tau2[d, :] = tau2d
+            sstats[:, ids] += n.multiply(phi,cts)
+
+        return ((tau1, tau2), sstats)
+    
+    def debug_e_step(self, wordids, wordcts):
+        """
+        Same functionality as do_e_step, but with more prints to aid
+        debugging: print initial guess of topic proportions, and that
+        at convergence.
+        """
+        batchD = len(wordids)
+
+        # Initialize the variational distribution q(pi|tau) for
+        # the mini-batch
+        tau1, tau2 = self.init_tau(batchD) # each has size batchD x self._K
+        sstats = n.zeros(self._lambda.shape) # shape (self._K, self._W)
+        
+        # Now, for each document d update that document's gamma and phi
+        it = 0
+        meanchange = 0
+        for d in range(0, batchD):
+            # These are mostly just shorthand (but might help cache locality)
+            ids = wordids[d] # list
+            cts = wordcts[d] # list
+            tau1d, tau2d = tau1[d, :], tau2[d, :] # each has size (self._K,)
+            phi = self.opt_phi(tau1d, tau2d, ids)
+            # Iterate between tau and phi until convergence
+            converged = False
+            for it in range(0, 200):
+                lasttau1 = tau1d
+                lasttau2 = tau2d
+                tau1d, tau2d = self.opt_tau(phi, cts)
+                phi = self.opt_phi(tau1d, tau2d, ids)
+                # If tau hasn't changed much, we're done.
+                meanchange = 0.5*n.mean(abs(lasttau1 - tau1d)) + 0.5*n.mean(abs(lasttau2 - tau2d))
+                if (meanchange < meanchangethresh):
+                    converged = True
+                    break
             tau1[d, :] = tau1d
             tau2[d, :] = tau2d
             sstats[:, ids] += n.multiply(phi,cts)
@@ -430,28 +494,24 @@ class SB_LDA(_TopicModel):
         return theta
     
 def main():
-    infile = sys.argv[1]
-    K = int(sys.argv[2])
-    alpha = float(sys.argv[3])
-    eta = float(sys.argv[4])
-    kappa = float(sys.argv[5])
-    S = int(sys.argv[6])
-
-    docs = corpus.corpus()
-    docs.read_data(infile)
-
-    vocab = open(sys.argv[7]).readlines()
-    model = TopicModel(vocab, K, 100000,
-                      0.1, 0.01, 1, 0.75)
-    for i in range(1000):
-        print(i)
-        wordids = [d.words for d in docs.docs[(i*S):((i+1)*S)]]
-        wordcts = [d.counts for d in docs.docs[(i*S):((i+1)*S)]]
-        model.update_lambda(wordids, wordcts)
-        n.savetxt('/tmp/lambda%d' % i, model._lambda.T)
+    # examine effect of SB-LDA E-step's on a document
+    ## load topics
+    K = 100
+    inroot = "wiki10k"
+    infile = inroot + "_wordids.csv"
+    with open(infile) as f:
+        D = sum(1 for line in f)
+    vocab = open('./dictnostops.txt').readlines()
+    topicpath = "results/sbldaK100_D16_wiki10k_wiki1k/lambda-100.dat"
+    tm = SB_LDA(vocab, K, topicpath, D, 1, 0.01, 1024., 0.7)
     
-#     infile = open(infile)
-#     corpus.read_stream_data(infile, 100000)
+    ## E-step on a document, plotting initial guess of topic proportions 
+    ## as well as their convergence
+    (wordids, wordcts) = \
+            corpus.get_batch_from_disk(inroot, D, 1)
+    tm.debug_e_step(wordids, wordcts)
+    
+    return
 
 if __name__ == '__main__':
     main()

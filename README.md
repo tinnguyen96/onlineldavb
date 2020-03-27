@@ -18,3 +18,7 @@ March 22, 2020:
     
     It takes 30 minutes to train LDA 1/K but 2 hours to train SB-LDA. The LL of SB-LDA is 
     significantly worse than SB-LDA; could be issue with batch size (SVI paper Figure 13).
+    
+March 25, 2020:
+    To isolate the effect of optimization, should load the topics learned from LDA 1/K to 
+    initialize the training of SB-LDA, and vice-versa.

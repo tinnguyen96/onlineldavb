@@ -51,13 +51,16 @@ def main():
     # Our vocabulary
     vocab = open('./dictnostops.txt').readlines()
     W = len(vocab)
-
+    
+    # Whether to do warmstart
+    topicpath = None
+    
     # Initialize the algorithm with alpha0=1 (alpha = alpha0/K), eta=0.01, tau_0=1024, kappa=0.7
-    lda = topicmodelvb.SB_LDA(vocab, K, D, 1, 0.01, 1024., 0.7)
+    lda = topicmodelvb.SB_LDA(vocab, K, topicpath, D, 1, 0.01, 1024., 0.7)
     # Run until we've seen D documents. (Feel free to interrupt *much*
     # sooner than this.)
     train_time = 0
-    savedir = "sbldaK" + str(K) + "_D" + str(batchsize) + "_" + inroot + "_" + heldoutroot
+    savedir = "results/sbldaK" + str(K) + "_D" + str(batchsize) + "_" + inroot + "_" + heldoutroot
     LLsavename = savedir + "/LL_" + str(seed) + ".csv"
     if not os.path.exists(savedir):
         os.mkdir(savedir)

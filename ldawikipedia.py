@@ -40,7 +40,7 @@ def main():
     batchsize = int(sys.argv[4])
 
     # The number of topics
-    K = 100
+    K = int(sys.argv[5])
 
     max_iter = 1000
 
@@ -50,13 +50,16 @@ def main():
     vocab = open('./dictnostops.txt').readlines()
     W = len(vocab)
     print(("Vocabulary has %d words" %W))
+    
+    # Whether to do warmstart
+    topicpath = None
 
     # Initialize the algorithm with alpha0=1 (alpha = alpha0/K), eta=0.01, tau_0=1024, kappa=0.7
-    lda = topicmodelvb.LDA(vocab, K, D, 1, 0.01, 1024., 0.7)
+    lda = topicmodelvb.LDA(vocab, K, topicpath, D, 1, 0.01, 1024., 0.7)
     # Run until we've seen D documents. (Feel free to interrupt *much*
     # sooner than this.)
     train_time = 0
-    savedir = "ldaK" + str(K) + "_D" + str(batchsize) + "_" + inroot + "_" + heldoutroot
+    savedir = "results/ldaK" + str(K) + "_D" + str(batchsize) + "_" + inroot + "_" + heldoutroot
     LLsavename = savedir + "/LL_" + str(seed) + ".csv"
     if not os.path.exists(savedir):
         os.mkdir(savedir)

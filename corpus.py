@@ -177,12 +177,25 @@ def parse_doc_list(docs, vocab):
     return((wordids, wordcts))
 
 def make_vocab(vocab):
+    """
+    Inputs:
+        vocab: dictionary mapping words to unique integer ids
+    Outputs:
+        vocabdict: slight modification of vocab, where all words are 
+        reduced to their lower case form.
+        idxtoword: dictionary mapping integer ids to dictionar words
+    """
     vocabdict = dict()
     for word in vocab:
         word = word.lower()
         word = re.sub(r'[^a-z]', '', word)
         vocabdict[word] = len(vocabdict)
-    return vocabdict
+    idxtoword = dict()
+    for item in vocabdict.items():
+        idx, word = item[1], item[0]
+        idxtoword[idx] = word
+    # print("Vocabdict length %d while idxtoword length %d" %(len(vocabdict),len(idxtoword)))
+    return (vocabdict, idxtoword)
 
 def get_batch_from_disk(inroot, D, batch_size=None):
     """
@@ -241,3 +254,46 @@ def split_document(docids, doccts, ratio=0.75):
     wordho_ids = [docids[i] for i in hoind]
     wordho_cts = [doccts[i] for i in hoind]
     return (wordobs_ids, wordobs_cts, wordho_ids, wordho_cts)
+
+def bag_of_words(docids, doccts, idxtoword, maxnum):
+    """
+    Convert the docids and doccts representation of a document
+    into the more interpretable bag-of-word presentation.
+    Inputs:
+        docids = list of unique word ids
+        doccts = list of how many words occurred
+        idxtoword = dictionary mapping word id to word
+        maxnum = maximum number of words to print
+    Outputs:
+        string representing the bag-of-word representation of 
+        the document
+    """
+    s = "Document:\n"
+    for i in range(0, min(maxnum,len(docids))):
+        word = idxtoword[docids[i]]
+        count = doccts[i]
+        ws = '%20s  \t---\t  %d \n' %(word,count)
+        s = s + ws
+    s = s + "\n"
+    return s
+
+def main():
+    # test bag_of_words
+    # np.random.seed(1)
+    inroot = "wiki10k"
+    infile = inroot + "_wordids.csv"
+    with open(infile) as f:
+        D = sum(1 for line in f)
+    batchsize = 5
+    (wordids, wordcts) = \
+            get_batch_from_disk(inroot, D, batchsize)
+    vocab = open('./dictnostops.txt').readlines()
+    _, idxtoword = make_vocab(vocab)
+    maxnum = 20
+    for i in range(batchsize):
+        s = bag_of_words(wordids[i], wordcts[i], idxtoword, maxnum)
+        print(s)
+    return
+
+if __name__ == '__main__':
+    main()

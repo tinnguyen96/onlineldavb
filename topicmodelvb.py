@@ -3,12 +3,12 @@
 import sys, re, time, string
 import numpy as n
 from scipy.special import gammaln, psi
-import warnings
 
 import corpus
 from corpus import parse_doc_list
 from corpus import make_vocab
 from corpus import split_document
+from corpus import bag_of_words
 
 n.random.seed(100000001)
 meanchangethresh = 0.001
@@ -23,6 +23,37 @@ def dirichlet_expectation(alpha):
     if (len(alpha.shape) == 1):
         return(psi(alpha) - psi(n.sum(alpha)))
     return(psi(alpha) - psi(n.sum(alpha, 1))[:, n.newaxis])
+
+def GEM_expectation(tau1, tau2, K):
+    """
+    Inputs:
+        K: length of tau1 and tau2
+        tau1: 1 x K, positive numbers, last number is 1 
+        tau2: 1 x K, non-negative numbers, last number is 0
+    Outputs:
+    
+    """
+    # theta(k) = p(k) x prod_{i=1}^{k-1} (1-p(i)), each p(i) Beta(tau1(i), tau2(i))
+    # and they are independent because of mean-field.
+    Ep = tau1/(tau1+tau2)
+    Em1p = 1-Ep # last value is 0 since theta(K) is Beta(1,0)
+    """
+    print(tau1) print(tau2) print(Ep)
+    """
+    Em1p[0,K-1] = 1 # hack
+    cumu = n.cumprod(Em1p, axis=1) # shape (K,)
+    """
+    print("Em1p shape") print(Em1p.shape)
+    """
+    ratiop = Ep/Em1p # shape (1 x K)
+    """
+    print("ratiop shape") print(ratiop.shape) print(cumu[0,:(self._K-1)].shape)
+    """
+    theta = n.multiply(ratiop, cumu) # shape (1 x K)
+    """
+    print(theta)
+    """
+    return theta
 
 class _TopicModel:
     """
@@ -412,45 +443,60 @@ class SB_LDA(_TopicModel):
 
         return ((tau1, tau2), sstats)
     
-    def debug_e_step(self, wordids, wordcts):
+    def debug_e_step(self, ids, cts, init_type="tau"):
         """
-        Same functionality as do_e_step, but with more prints to aid
-        debugging: print initial guess of topic proportions, and that
-        at convergence.
+        Almost the same functionality as do_e_step, but with more prints to aid
+        debugging (initial guess of topic proportions, and that
+        at convergence). 
+        Inputs:
+            ids = list, index of unique words
+            cts = list, count of unique words
+            init_type = str, either "tau" or "phi"
+        Outputs:
+        Remarks:
         """
-        batchD = len(wordids)
 
         # Initialize the variational distribution q(pi|tau) for
         # the mini-batch
-        tau1, tau2 = self.init_tau(batchD) # each has size batchD x self._K
         sstats = n.zeros(self._lambda.shape) # shape (self._K, self._W)
+        
+        if (init_type == "tau"):
+            tau1, tau2 = self.init_tau(1) # each has size 1 x self._K
+            tau1d, tau2d = tau1[0, :], tau2[0, :] # each has size (self._K,)
+            phi = self.opt_phi(tau1d, tau2d, ids) # self._K x len(ids)
+        elif (init_type == "phi"):
+            phi = self.init_phi(ids)  # self._K x len(ids)
+            tau1d, tau2d = self.opt_tau(phi, cts) # each has size (self._K,)
+        print("Initial topic proportion after %s init is " %init_type)
+        print(GEM_expectation(tau1d[n.newaxis,:], tau2d[n.newaxis,:], self._K))
         
         # Now, for each document d update that document's gamma and phi
         it = 0
         meanchange = 0
-        for d in range(0, batchD):
-            # These are mostly just shorthand (but might help cache locality)
-            ids = wordids[d] # list
-            cts = wordcts[d] # list
-            tau1d, tau2d = tau1[d, :], tau2[d, :] # each has size (self._K,)
-            phi = self.opt_phi(tau1d, tau2d, ids)
-            # Iterate between tau and phi until convergence
-            converged = False
-            for it in range(0, 200):
-                lasttau1 = tau1d
-                lasttau2 = tau2d
+        # Iterate between tau and phi until convergence
+        converged = False
+        for it in range(0, 200):
+            lasttau1 = tau1d
+            lasttau2 = tau2d
+            if (init_type == "tau"):
                 tau1d, tau2d = self.opt_tau(phi, cts)
                 phi = self.opt_phi(tau1d, tau2d, ids)
-                # If tau hasn't changed much, we're done.
-                meanchange = 0.5*n.mean(abs(lasttau1 - tau1d)) + 0.5*n.mean(abs(lasttau2 - tau2d))
-                if (meanchange < meanchangethresh):
-                    converged = True
-                    break
-            tau1[d, :] = tau1d
-            tau2[d, :] = tau2d
-            sstats[:, ids] += n.multiply(phi,cts)
+            elif (init_type == "phi"):
+                phi = self.opt_phi(tau1d, tau2d, ids)
+                tau1d, tau2d = self.opt_tau(phi, cts)
+            # If tau hasn't changed much, we're done.
+            meanchange = 0.5*n.mean(abs(lasttau1 - tau1d)) + 0.5*n.mean(abs(lasttau2 - tau2d))
+            if (meanchange < meanchangethresh):
+                converged = True
+                break
+        sstats[:, ids] += n.multiply(phi,cts)
+        print("Topic proportion at convergence is")
+        print(GEM_expectation(tau1d[n.newaxis,:], tau2d[n.newaxis,:], self._K))
 
-        return ((tau1, tau2), sstats)
+        ## invariant: sum of all sstats entries equal sum of cts
+        assert abs(n.sum(sstats) - n.sum(cts) < 0.001), "sstats invariant doesn't hold!"
+        
+        return ((tau1d, tau2d), sstats)
 
     def theta_means(self, wordobs_ids, wordobs_cts):
         """
@@ -463,38 +509,14 @@ class SB_LDA(_TopicModel):
         Remarks:
         """
         taus, _ = self.do_e_step([wordobs_ids],[wordobs_cts]) 
-        tau1, tau2 = taus[0], taus[1] # each's shape is 1 x self._K
-        # theta(k) = p(k) x prod_{i=1}^{k-1} (1-p(i)), each p(i) Beta(tau1(i), tau2(i))
-        # and they are independent because of mean-field.
-        Ep = tau1/(tau1+tau2)
-        Em1p = 1-Ep # last value is 0 since theta(K) is Beta(1,0)
-        """
-        print(tau1)
-        print(tau2)
-        print(Ep)
-        """
-        Em1p[0,self._K-1] = 1 # hack
-        cumu = n.cumprod(Em1p, axis=1) # shape (self._K,)
-        """
-        print("Em1p shape")
-        print(Em1p.shape)
-        """
-        ratiop = Ep/Em1p # shape (1 x self._K)
-        """
-        print("ratiop shape")
-        print(ratiop.shape)
-        """
-        """
-        print(cumu[0,:(self._K-1)].shape)
-        """
-        theta = n.multiply(ratiop, cumu) # shape (1 x self._K)
-        """
-        print(theta)
-        """
+        theta = GEM_expectation(taus[0], taus[1], self._K) # each's shape is 1 x self._K
         return theta
     
 def main():
     # examine effect of SB-LDA E-step's on a document
+    
+    seed = int(sys.argv[1])
+    
     ## load topics
     K = 100
     inroot = "wiki10k"
@@ -507,10 +529,18 @@ def main():
     
     ## E-step on a document, plotting initial guess of topic proportions 
     ## as well as their convergence
+    n.random.seed(seed)
     (wordids, wordcts) = \
             corpus.get_batch_from_disk(inroot, D, 1)
-    tm.debug_e_step(wordids, wordcts)
-    
+    ### what is the document?
+    print(bag_of_words(wordids[0], wordcts[0], tm._idxtoword, 20))
+    ### tau init 
+    taus1, sstats1 = tm.debug_e_step(wordids[0], wordcts[0], "tau")
+    print()
+    ### phi init
+    taus2, sstats2 = tm.debug_e_step(wordids[0], wordcts[0], "phi")
+    print()
+    print("L2 norm between sufficient statistics %.2f" %n.linalg.norm(sstats1-sstats2))
     return
 
 if __name__ == '__main__':

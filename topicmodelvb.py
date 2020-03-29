@@ -2,7 +2,7 @@
 
 import sys, re, time, string
 import numpy as n
-from scipy.special import gammaln, psi
+from scipy.special import gammaln, psi, beta
 
 import corpus
 from corpus import parse_doc_list
@@ -24,6 +24,28 @@ def dirichlet_expectation(alpha):
         return(psi(alpha) - psi(n.sum(alpha)))
     return(psi(alpha) - psi(n.sum(alpha, 1))[:, n.newaxis])
 
+def beta_KL(alpha1, beta1, alpha2, beta2):
+    """
+    Inputs:
+        alpha1, beta1, alpha2, beta2: 1-D arrays of positive reals, same length (or some 
+        that is compatible with broadcasting)
+    Return KL(Beta(alpha1, beta1)||Beta(alpha2, beta2))
+    """ 
+    div = np.log(beta(alpha2, beta2)/beta(alpha1, beta1)) + (alpha1 - alpha2)*psi(alpha1)  \
+    + (beta1 - beta2)*psi(beta1) + (alpha2 + beta2 - alpha1 - beta1)*psi(alpha1 + beta1)
+    return div
+
+def multinomial_entropy(phi):
+    """
+    Inputs:
+        phi: K x T, each column is a multinomial distribution.
+    Outputs:
+        entropy of the multinomial distributions, shape (T,)
+    """
+    logphi = np.log(phi)
+    entropy = np.sum(np.multiply(logphi, phi), axis=1)
+    return entropy 
+
 def GEM_expectation(tau1, tau2, K):
     """
     Inputs:
@@ -31,6 +53,7 @@ def GEM_expectation(tau1, tau2, K):
         tau1: 1 x K, positive numbers, last number is 1 
         tau2: 1 x K, non-negative numbers, last number is 0
     Outputs:
+        theta: 1 x K
     
     """
     # theta(k) = p(k) x prod_{i=1}^{k-1} (1-p(i)), each p(i) Beta(tau1(i), tau2(i))
@@ -327,6 +350,40 @@ class SB_LDA(_TopicModel):
         """
         return
     
+    def ELBO(self, ids, cts, phi, tau1, tau2):
+        """
+        Compute ELBO over sampled document.
+        Inputs:
+            ids = list, index of unique words
+            cts = list, count of unique words
+            phi = (self._K x len(cts)), variational parameters over per-word topic assignments
+            tau1, tau2 = lists, variational parameers over per-document stick-breaking weight
+        Outputs:
+            ELBO(phi, tau1, tau2) for the sampled document.
+        Remarks:
+        """
+        # KL terms
+        KLs = beta_KL(tau1[:(self._K-1)],tau2[:(self._K-1)],1,self._alpha0)
+        term1 = -np.sum(KLs)
+        
+        # E q [log p (w | z, beta)]
+        Elogbetad = self._Elogbeta[:, ids] # (self._K, len(ids))
+        term2 = np.sum(np.multiply(cts, np.sum(np.multiply(phi, Elogbetad),axis=0)))
+        
+        # E q [log p (z | p)]
+        Elogpm1pd = dirichlet_expectation(n.column_stack((tau1,tau2)))
+        Elogpd = Elogpm1pd[:,0] # shape (self._K,). 
+        Elogm1pd = Elogpm1pd[:,1] # shape (self._K,). Last value is -Inf since Beta(1,0), need to fix.
+        Elogm1pd[self._K-1] = 0
+        Elogthetad = Elogpd + n.dot(self._bmask, Elogm1pd) # shape (self._K,)
+        term3 = np.sum(np.multiply(cts, np.dot(Elogthetad[np.newaxis,:], phi)))
+        
+        # E q [log q(z)]
+        term4 = -np.sum(np.multiply(cts,multinomial_entropy(phi)))
+        bound = term1 + term2 + term3 + term4
+                        
+        return bound
+    
     def init_phi(self, ids):
         """
         Inputs:
@@ -371,16 +428,10 @@ class SB_LDA(_TopicModel):
         Elogpd = Elogpm1pd[:,0] # shape (self._K,). 
         Elogm1pd = Elogpm1pd[:,1] # shape (self._K,). Last value is -Inf since Beta(1,0), need to fix.
         Elogm1pd[self._K-1] = 0
-        """
-        print("Elogm1pd")
-        print(Elogm1pd)
-        """
+        """ print("Elogm1pd") print(Elogm1pd) """
         # for now, explicitly represent optimal phi to ensure correctness 
         Elogthetad = Elogpd + n.dot(self._bmask, Elogm1pd) # shape (self._K,)
-        """
-        print("Elogthetad")
-        print(Elogthetad)
-        """
+        """ print("Elogthetad") print(Elogthetad) """
         logphi = Elogthetad[:, n.newaxis] + Elogbetad # size (self._K, len(cts))
         # normalize across rows
         unormphi = n.exp(logphi)
@@ -430,20 +481,13 @@ class SB_LDA(_TopicModel):
                 if (meanchange < meanchangethresh):
                     converged = True
                     break
-            
-            # might have exited coordinate ascent without convergence
-            """
-            if (not converged):
-                print("Coordinate ascent in E-step didn't converge")
-                print("Last change in taud %f" %meanchange)
-            """
             tau1[d, :] = tau1d
             tau2[d, :] = tau2d
             sstats[:, ids] += n.multiply(phi,cts)
 
         return ((tau1, tau2), sstats)
     
-    def debug_e_step(self, ids, cts, init_type="tau"):
+    def debug_e_step(self, ids, cts, ax, init_type="tau"):
         """
         Almost the same functionality as do_e_step, but with more prints to aid
         debugging (initial guess of topic proportions, and that
@@ -451,15 +495,18 @@ class SB_LDA(_TopicModel):
         Inputs:
             ids = list, index of unique words
             cts = list, count of unique words
+            ax = axis to plot ELBO
             init_type = str, either "tau" or "phi"
         Outputs:
         Remarks:
         """
-
         # Initialize the variational distribution q(pi|tau) for
         # the mini-batch
         sstats = n.zeros(self._lambda.shape) # shape (self._K, self._W)
         
+        # record ELBO
+        lbound = []
+                        
         if (init_type == "tau"):
             tau1, tau2 = self.init_tau(1) # each has size 1 x self._K
             tau1d, tau2d = tau1[0, :], tau2[0, :] # each has size (self._K,)
@@ -469,10 +516,12 @@ class SB_LDA(_TopicModel):
             tau1d, tau2d = self.opt_tau(phi, cts) # each has size (self._K,)
         print("Initial topic proportion after %s init is " %init_type)
         print(GEM_expectation(tau1d[n.newaxis,:], tau2d[n.newaxis,:], self._K))
-        
+        lbound.append(self.ELBO(ids, cts, phi, tau1d, tau2d))
+                        
         # Now, for each document d update that document's gamma and phi
         it = 0
         meanchange = 0
+        
         # Iterate between tau and phi until convergence
         converged = False
         for it in range(0, 200):
@@ -485,6 +534,7 @@ class SB_LDA(_TopicModel):
                 phi = self.opt_phi(tau1d, tau2d, ids)
                 tau1d, tau2d = self.opt_tau(phi, cts)
             # If tau hasn't changed much, we're done.
+            lbound.append(self.ELBO(ids, cts, phi, tau1d, tau2d))
             meanchange = 0.5*n.mean(abs(lasttau1 - tau1d)) + 0.5*n.mean(abs(lasttau2 - tau2d))
             if (meanchange < meanchangethresh):
                 converged = True
@@ -496,6 +546,12 @@ class SB_LDA(_TopicModel):
         ## invariant: sum of all sstats entries equal sum of cts
         assert abs(n.sum(sstats) - n.sum(cts) < 0.001), "sstats invariant doesn't hold!"
         
+        ## plot ELBO versus iteration
+        ax.plot(lbound)
+        ax.set_title("ELBO as E-step progresses")
+        ax.set_xlabel("Iteration")
+        ax.set_ylabel("Lower bound")
+                        
         return ((tau1d, tau2d), sstats)
 
     def theta_means(self, wordobs_ids, wordobs_cts):

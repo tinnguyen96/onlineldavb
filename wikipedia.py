@@ -1,11 +1,3 @@
-"""
-Command-line arguments:
-- name of training corpus
-- name of test corpus
-- seed for randomness
-- minibatch size 
-"""
-
 import pickle, string, numpy, getopt, sys, random, time, re, pprint
 import os
 import argparse
@@ -13,13 +5,13 @@ import argparse
 import topicmodelvb
 import corpus
 
-def makesaves(K, batchsize, inroot, heldoutroot, seed, topicpath):
-    savedir = "results/sbldaK" + str(K) + "_D" + str(batchsize) + "_" + inroot + "_" + heldoutroot
+def makesaves(K, batchsize, inroot, heldoutroot, seed, topicpath, method):
+    savedir = "results/" + method + "K" + str(K) + "_D" + str(batchsize) + "_" + inroot + "_" + heldoutroot
     if (not topicpath is None):
         savedir = savedir + "/warm/" + topicpath
     LLsavename = savedir + "/LL_" + str(seed) + ".csv"
     if not os.path.exists(savedir):
-        os.makedirs(savedir)
+        os.makedirs(savedir,True)
     return savedir, LLsavename 
 
 def main():
@@ -27,10 +19,12 @@ def main():
     Load a wikipedia corpus in batches from disk and run SB-LDA.
     """
     parser = argparse.ArgumentParser()
+    parser.add_argument("--method", help="type of topic model")
     parser.add_argument("--inroot", help="training corpus root name")
     parser.add_argument("--heldoutroot", help="testing corpus root name")
     parser.add_argument("--topicpath",help="path to pre-trained topics to initialize training")
     parser.add_argument("--seed", help="seed for replicability",type=int)
+    parser.add_argument("--maxiter", help="total number of mini-batches to train",type=int)
     parser.add_argument("--batchsize", help="mini-batch size",type=int)
     parser.add_argument("--numtopics", help="maximum number of topics",type=int)
     args = parser.parse_args()
@@ -62,7 +56,11 @@ def main():
     # The number of topics
     K = args.numtopics
 
-    max_iter = 1000
+    # Total number of batches
+    if args.maxiter is None:
+        max_iter = 1000
+    else:
+        max_iter = args.maxiter
     
     LL_list = []
 
@@ -72,14 +70,25 @@ def main():
     
     # Whether to do warmstart
     topicpath = args.topicpath
-    topicfile = topicpath + ".dat"
-    
-    # Initialize the algorithm with alpha0=1 (alpha = alpha0/K), eta=0.01, tau_0=1024, kappa=0.7
-    lda = topicmodelvb.SB_LDA(vocab, K, topicfile, D, 1, 0.01, 1024., 0.7)
-    # Run until we've seen D documents. (Feel free to interrupt *much*
-    # sooner than this.)
+    if (topicpath is None):
+        topicfile = None
+    else:
+        topicfile = topicpath + ".dat"
+
+    # Different constructors for different methods
+    method = args.method
+    if (method == "lda"):
+        lda = topicmodelvb.LDA(vocab, K, topicfile, D, 1, 0.01, 1024., 0.7)
+    elif (method == "sblda"):
+        lda = topicmodelvb.SB_LDA(vocab, K, topicfile, D, 1, 0.01, 1024., 0.7)
     train_time = 0
-    savedir, LLsavename = makesaves(K, batchsize, inroot, heldoutroot, seed, topicpath)
+    savedir, LLsavename = makesaves(K, batchsize, inroot, heldoutroot, seed, topicpath, method)
+    # load the held-out documents
+    (howordids,howordcts) = \
+                corpus.get_batch_from_disk(heldoutroot, D_, None)
+    if (not topicpath is None):
+        initLL = lda.log_likelihood_docs(howordids,howordcts)
+        print("Under warm start topics, current model has held-out LL: %f" %initLL)
     for iteration in range(0, max_iter):
         t0 = time.time()
         # Load a random batch of articles from disk
@@ -89,11 +98,9 @@ def main():
         _ = lda.update_lambda(wordids, wordcts)
         t1 = time.time()
         train_time += t1 - t0
+        # Compute average log-likelihood on held-out corpus every so number of iterations
         if (iteration % 10 == 0):
-            # Compute average log-likelihood on held-out corpus
             t0 = time.time()
-            (howordids,howordcts) = \
-                corpus.get_batch_from_disk(heldoutroot, D_, None)
             LL = lda.log_likelihood_docs(howordids,howordcts)
             t1 = time.time()
             test_time = t1 - t0
@@ -101,10 +108,9 @@ def main():
                 (seed, iteration, lda._rhot, train_time, test_time, LL))
             LL_list.append([iteration, train_time, LL])
             numpy.savetxt(LLsavename, LL_list)
-        
         # save topics every so number of iterations
         if (seed == 0):
-            if (iteration % 100 == 0):
+            if (iteration % 400 == 0):
                 lambdaname = (savedir + "/lambda-%d.dat") % iteration
                 numpy.savetxt(lambdaname, lda._lambda)
 

@@ -200,6 +200,9 @@ def make_vocab(vocab):
 def get_batch_from_disk(inroot, D, batch_size=None):
     """
     Inputs:
+        inroot = str, "wiki10k" for example
+        D = int, number of documents in training corpus
+        batch_size = int, number of documents to sample
     Outputs:
     Remarks: 
         The 10k data-set is small enough (4MB) to be loaded in its 

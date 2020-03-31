@@ -1,82 +1,15 @@
-# topicmodelvb.py
+# topicmodelvb_v2.py
 
 import sys, re, time, string
 import numpy as n
-from scipy.special import gammaln, psi, beta
 
-import corpus
-from corpus import parse_doc_list
-from corpus import make_vocab
-from corpus import split_document
-from corpus import bag_of_words
+import matplotlib.pyplot as plt
+
+from utils import *
+from corpus import *
 
 n.random.seed(100000001)
 meanchangethresh = 0.001
-
-def dirichlet_expectation(alpha):
-    """
-    Inputs:
-        alpha: K x V, the Dirichlet parameters are stored in rows.
-    Outputs:
-        For a vector theta ~ Dir(alpha), computes E[log(theta)] given alpha.
-    """
-    if (len(alpha.shape) == 1):
-        return(psi(alpha) - psi(n.sum(alpha)))
-    return(psi(alpha) - psi(n.sum(alpha, 1))[:, n.newaxis])
-
-def beta_KL(alpha1, beta1, alpha2, beta2):
-    """
-    Inputs:
-        alpha1, beta1, alpha2, beta2: 1-D arrays of positive reals, same length (or some 
-        that is compatible with broadcasting)
-    Return KL(Beta(alpha1, beta1)||Beta(alpha2, beta2))
-    """ 
-    div = np.log(beta(alpha2, beta2)/beta(alpha1, beta1)) + (alpha1 - alpha2)*psi(alpha1)  \
-    + (beta1 - beta2)*psi(beta1) + (alpha2 + beta2 - alpha1 - beta1)*psi(alpha1 + beta1)
-    return div
-
-def multinomial_entropy(phi):
-    """
-    Inputs:
-        phi: K x T, each column is a multinomial distribution.
-    Outputs:
-        entropy of the multinomial distributions, shape (T,)
-    """
-    logphi = np.log(phi)
-    entropy = np.sum(np.multiply(logphi, phi), axis=1)
-    return entropy 
-
-def GEM_expectation(tau1, tau2, K):
-    """
-    Inputs:
-        K: length of tau1 and tau2
-        tau1: 1 x K, positive numbers, last number is 1 
-        tau2: 1 x K, non-negative numbers, last number is 0
-    Outputs:
-        theta: 1 x K
-    
-    """
-    # theta(k) = p(k) x prod_{i=1}^{k-1} (1-p(i)), each p(i) Beta(tau1(i), tau2(i))
-    # and they are independent because of mean-field.
-    Ep = tau1/(tau1+tau2)
-    Em1p = 1-Ep # last value is 0 since theta(K) is Beta(1,0)
-    """
-    print(tau1) print(tau2) print(Ep)
-    """
-    Em1p[0,K-1] = 1 # hack
-    cumu = n.cumprod(Em1p, axis=1) # shape (K,)
-    """
-    print("Em1p shape") print(Em1p.shape)
-    """
-    ratiop = Ep/Em1p # shape (1 x K)
-    """
-    print("ratiop shape") print(ratiop.shape) print(cumu[0,:(self._K-1)].shape)
-    """
-    theta = n.multiply(ratiop, cumu) # shape (1 x K)
-    """
-    print(theta)
-    """
-    return theta
 
 class _TopicModel:
     """
@@ -352,7 +285,7 @@ class SB_LDA(_TopicModel):
     
     def ELBO(self, ids, cts, phi, tau1, tau2):
         """
-        Compute ELBO over sampled document.
+        Compute ELBO of sampled document as function of local variational parameters.
         Inputs:
             ids = list, index of unique words
             cts = list, count of unique words
@@ -364,25 +297,31 @@ class SB_LDA(_TopicModel):
         """
         # KL terms
         KLs = beta_KL(tau1[:(self._K-1)],tau2[:(self._K-1)],1,self._alpha0)
-        term1 = -np.sum(KLs)
-        
+        term1 = -n.sum(KLs)
         # E q [log p (w | z, beta)]
         Elogbetad = self._Elogbeta[:, ids] # (self._K, len(ids))
-        term2 = np.sum(np.multiply(cts, np.sum(np.multiply(phi, Elogbetad),axis=0)))
-        
+        term2 = n.sum(n.multiply(cts, n.sum(n.multiply(phi, Elogbetad),axis=0)))
         # E q [log p (z | p)]
         Elogpm1pd = dirichlet_expectation(n.column_stack((tau1,tau2)))
         Elogpd = Elogpm1pd[:,0] # shape (self._K,). 
         Elogm1pd = Elogpm1pd[:,1] # shape (self._K,). Last value is -Inf since Beta(1,0), need to fix.
         Elogm1pd[self._K-1] = 0
         Elogthetad = Elogpd + n.dot(self._bmask, Elogm1pd) # shape (self._K,)
-        term3 = np.sum(np.multiply(cts, np.dot(Elogthetad[np.newaxis,:], phi)))
-        
+        term3 = n.sum(n.multiply(cts, n.dot(Elogthetad[n.newaxis,:], phi)))
         # E q [log q(z)]
-        term4 = -np.sum(np.multiply(cts,multinomial_entropy(phi)))
+        temp = multinomial_entropy(phi)
+        term4 = -n.sum(n.multiply(cts,multinomial_entropy(phi)))
         bound = term1 + term2 + term3 + term4
-                        
         return bound
+    
+    def ELBOglobal(self, ids, cts, phi, tau1, tau2):
+        """
+        Compute ELBO as function of all variational parameters, pretending that the 
+        document (ids, cts) occurred self._D times.
+        """
+        nKL = -n.sum(dirichlet_KL(self._lambda,self._eta*n.ones((self._K, self._W))))
+        local = self._D*self.ELBO(ids, cts, phi, tau1, tau2)
+        return nKL + local
     
     def init_phi(self, ids):
         """
@@ -487,26 +426,26 @@ class SB_LDA(_TopicModel):
 
         return ((tau1, tau2), sstats)
     
-    def debug_e_step(self, ids, cts, ax, init_type="tau"):
+    def debug_e_step(self, ids, cts, init_type="tau"):
         """
-        Almost the same functionality as do_e_step, but with more prints to aid
-        debugging (initial guess of topic proportions, and that
-        at convergence). 
+        Almost the same functionality as do_e_step, but with additions 
+        to aid debugging: record ELBO across coordinate ascent steps
         Inputs:
             ids = list, index of unique words
             cts = list, count of unique words
             ax = axis to plot ELBO
             init_type = str, either "tau" or "phi"
         Outputs:
+            tau, ELBO, sstats
         Remarks:
         """
         # Initialize the variational distribution q(pi|tau) for
         # the mini-batch
         sstats = n.zeros(self._lambda.shape) # shape (self._K, self._W)
-        
-        # record ELBO
+        # record ELBO as function of local variational parameters
         lbound = []
-                        
+        # record change in variational parameters
+        changes = []
         if (init_type == "tau"):
             tau1, tau2 = self.init_tau(1) # each has size 1 x self._K
             tau1d, tau2d = tau1[0, :], tau2[0, :] # each has size (self._K,)
@@ -514,14 +453,14 @@ class SB_LDA(_TopicModel):
         elif (init_type == "phi"):
             phi = self.init_phi(ids)  # self._K x len(ids)
             tau1d, tau2d = self.opt_tau(phi, cts) # each has size (self._K,)
+        """
         print("Initial topic proportion after %s init is " %init_type)
         print(GEM_expectation(tau1d[n.newaxis,:], tau2d[n.newaxis,:], self._K))
+        """
         lbound.append(self.ELBO(ids, cts, phi, tau1d, tau2d))
-                        
         # Now, for each document d update that document's gamma and phi
         it = 0
         meanchange = 0
-        
         # Iterate between tau and phi until convergence
         converged = False
         for it in range(0, 200):
@@ -536,24 +475,45 @@ class SB_LDA(_TopicModel):
             # If tau hasn't changed much, we're done.
             lbound.append(self.ELBO(ids, cts, phi, tau1d, tau2d))
             meanchange = 0.5*n.mean(abs(lasttau1 - tau1d)) + 0.5*n.mean(abs(lasttau2 - tau2d))
+            changes.append(meanchange)
             if (meanchange < meanchangethresh):
                 converged = True
                 break
         sstats[:, ids] += n.multiply(phi,cts)
+        """
         print("Topic proportion at convergence is")
         print(GEM_expectation(tau1d[n.newaxis,:], tau2d[n.newaxis,:], self._K))
-
+        """
+        ## ELBO as function of global params (for optimized local params)
+        globELBO = self.ELBOglobal(ids, cts, phi, tau1d, tau2d)
         ## invariant: sum of all sstats entries equal sum of cts
         assert abs(n.sum(sstats) - n.sum(cts) < 0.001), "sstats invariant doesn't hold!"
-        
-        ## plot ELBO versus iteration
-        ax.plot(lbound)
-        ax.set_title("ELBO as E-step progresses")
-        ax.set_xlabel("Iteration")
-        ax.set_ylabel("Lower bound")
-                        
-        return ((tau1d, tau2d), sstats)
+        return ((phi, tau1d, tau2d), lbound, globELBO, changes, sstats)
 
+    def debug_update_lambda(self, ids, cts):
+        """
+        Inputs:
+            ids, cts: list of unique word indices and their counts
+        Outputs:
+        """
+        # rhot will be between 0 and 1, and says how much to weight
+        # the information we got from this mini-batch.
+        rhot = pow(self._tau0 + self._updatect, -self._kappa)
+        self._rhot = rhot
+        # Do an E step to update gamma, phi | lambda for this
+        # mini-batch. This also returns the information about phi that
+        # we need to update lambda.
+        varparams, lbound, oldELBO, changes, sstats = self.debug_e_step(ids, cts)
+        # Update lambda based on documents.
+        self._lambda = self._lambda * (1-rhot) + \
+            rhot * (self._eta + self._D * sstats)
+        self._Elogbeta = dirichlet_expectation(self._lambda)
+        self._expElogbeta = n.exp(self._Elogbeta)
+        newELBO = self.ELBOglobal(ids, cts, varparams[0], varparams[1], varparams[2])
+        self._updatect += 1
+        print("Change in ELBO caused by %d-th update is %.2f" %(self._updatect, newELBO-oldELBO)) 
+        return varparams
+    
     def theta_means(self, wordobs_ids, wordobs_cts):
         """
         Inputs:
@@ -568,35 +528,76 @@ class SB_LDA(_TopicModel):
         theta = GEM_expectation(taus[0], taus[1], self._K) # each's shape is 1 x self._K
         return theta
     
-def main():
-    # examine effect of SB-LDA E-step's on a document
-    
-    seed = int(sys.argv[1])
-    
+def sanity_E_step(seed, K, topicpath):
+    """
+    Examine effect of SB-LDA E-step's on a document
+    Inputs:
+        seed: seed for replicability
+        K: number of topics
+        topicpath: file path of pre-trained topics for warm-start training
+    Outputs:
+    """
     ## load topics
-    K = 100
     inroot = "wiki10k"
     infile = inroot + "_wordids.csv"
     with open(infile) as f:
         D = sum(1 for line in f)
     vocab = open('./dictnostops.txt').readlines()
-    topicpath = "results/sbldaK100_D16_wiki10k_wiki1k/lambda-100.dat"
     tm = SB_LDA(vocab, K, topicpath, D, 1, 0.01, 1024., 0.7)
     
     ## E-step on a document, plotting initial guess of topic proportions 
-    ## as well as their convergence
+    ## as well as their convergence, but make no updates to underlying topics 
     n.random.seed(seed)
     (wordids, wordcts) = \
-            corpus.get_batch_from_disk(inroot, D, 1)
-    ### what is the document?
-    print(bag_of_words(wordids[0], wordcts[0], tm._idxtoword, 20))
-    ### tau init 
-    taus1, sstats1 = tm.debug_e_step(wordids[0], wordcts[0], "tau")
-    print()
-    ### phi init
-    taus2, sstats2 = tm.debug_e_step(wordids[0], wordcts[0], "phi")
-    print()
-    print("L2 norm between sufficient statistics %.2f" %n.linalg.norm(sstats1-sstats2))
+            get_batch_from_disk(inroot, D, 6)
+    fig1, axes1 = plt.subplots(2,3,figsize=(12,8))
+    fig2, axes2 = plt.subplots(2,3,figsize=(12,8))
+    for i in range(6):
+        cidx = i % 3
+        ridx = i // 3
+        _, elbo1, oldbound1, changes1, sstats1 = tm.debug_e_step(wordids[i], wordcts[i], "tau")
+        _, elbo2, oldbound2, changes2, sstats2 = tm.debug_e_step(wordids[i], wordcts[i], "phi")
+        # ELBO
+        axes1[ridx, cidx].plot(elbo1, marker='o', markersize=2, label="tau")
+        axes1[ridx, cidx].plot(elbo2, marker='o', markersize=2, label="phi")
+        axes1[ridx, cidx].set_xlabel("Iteration")
+        axes1[ridx, cidx].set_ylabel("ELBO")
+        axes1[ridx, cidx].set_title("Document %i contains %d words" %(i, sum(wordcts[i])))
+        axes1[ridx, cidx].legend()
+        # change in tau
+        axes2[ridx, cidx].plot(changes1, marker='o', markersize=2, label="tau")
+        axes2[ridx, cidx].plot(changes2, marker='o', markersize=2, label="phi")
+        axes2[ridx, cidx].set_xlabel("Iteration")
+        axes2[ridx, cidx].set_ylabel("Mean change in tau")
+        axes2[ridx, cidx].set_title("Document %i contains %d words" %(i, sum(wordcts[i])))
+        axes2[ridx, cidx].legend()
+    fig1.tight_layout()
+    fig2.tight_layout()
+    plt.show()
+    return
+
+def sanity_M_step(seed, K, topicpath):
+    ## load topics
+    inroot = "wiki10k"
+    infile = inroot + "_wordids.csv"
+    with open(infile) as f:
+        D = sum(1 for line in f)
+    vocab = open('./dictnostops.txt').readlines()
+    tm = SB_LDA(vocab, K, topicpath, D, 1, 0.01, 1024., 0.7)
+    
+    ## Do 10 M-steps based on 10 sampled documents. All steps 
+    ## print out the change in ELBO as function of topics after 
+    ## the update: should always be positive!
+    n.random.seed(seed)
+    (wordids, wordcts) = \
+            get_batch_from_disk(inroot, D, 10)
+    for i in range(10):
+        _ = tm.debug_update_lambda(wordids[i], wordcts[i])
+    return
+
+def main():
+    sanity_E_step(12, 100, "results/sbldaK100_D16_wiki10k_wiki1k/lambda-100.dat")
+    sanity_M_step(1, 100, None)
     return
 
 if __name__ == '__main__':

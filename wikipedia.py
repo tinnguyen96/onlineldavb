@@ -11,7 +11,8 @@ def makesaves(K, batchsize, inroot, heldoutroot, seed, topicpath, method):
         savedir = savedir + "/warm/" + topicpath
     LLsavename = savedir + "/LL_" + str(seed) + ".csv"
     if not os.path.exists(savedir):
-        os.makedirs(savedir,True)
+        os.makedirs(savedir,0o777,True)
+        print("Succesfully created directory %s" %savedir)
     return savedir, LLsavename 
 
 def main():
